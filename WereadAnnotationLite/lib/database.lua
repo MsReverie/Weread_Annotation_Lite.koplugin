@@ -1,4 +1,3 @@
-
 local Database = {}
 Database.__index = Database
 local json = require("json")
@@ -22,7 +21,7 @@ function Database:path(file)
     local base = self.settings:get("data_dir") or self.settings:get("cache_dir") or "."
     local document_path = tostring(file or "")
     local suffix = Crypto.sha256_hex(document_path):sub(1, 16)
-    return base .. "/" .. safe_basename(document_path) .. "-" .. suffix .. ".db"
+    return base .. "/" .. suffix .. ".db"
 end
 
 function Database:saveBinding(file, binding)
@@ -42,7 +41,7 @@ function Database:saveRecords(file, records)
         VALUES(?,?,?,?,?,?,?) ON CONFLICT(chapter_uid,range) DO UPDATE SET
         text=excluded.text,pos0=excluded.pos0,pos1=excluded.pos1]])
     for _, r in ipairs(records or {}) do
-        stmt:reset():bind(tostring(r.chapter_uid), tostring(r.range), r.text or "", r.pos0, r.pos1, "[]", 0):step()
+        stmt:reset():bind(r.chapter_uid, r.range, r.text or "", r.pos0, r.pos1, "[]", 0):step()
     end
     stmt:close(); db:exec("COMMIT"); db:close()
 end
@@ -59,7 +58,7 @@ function Database:getUnderlineCache(file, chapter_uid)
     if not db then return nil end
     local stmt = db:prepare([[SELECT synckey,payload FROM underline_cache
         WHERE chapter_uid=?]])
-    local row = stmt:reset():bind(tostring(chapter_uid)):step()
+    local row = stmt:reset():bind(chapter_uid):step()
     stmt:close(); db:close()
     if not row then return nil end
     return {
@@ -75,7 +74,7 @@ function Database:saveUnderlineCache(file, chapter_uid, synckey, items)
         (chapter_uid,synckey,payload,updated_at) VALUES(?,?,?,?)
         ON CONFLICT(chapter_uid) DO UPDATE SET synckey=excluded.synckey,
         payload=excluded.payload,updated_at=excluded.updated_at]])
-    stmt:reset():bind(tostring(chapter_uid), tonumber(synckey) or 0,
+    stmt:reset():bind(chapter_uid, tonumber(synckey) or 0,
         json.encode(items or {}), os.time()):step()
     stmt:close(); db:close()
 end
@@ -90,7 +89,7 @@ function Database:saveThoughts(file, chapter_uid, range, payload, fetched)
     if not db then return nil, open_err end
     local stmt = db:prepare([[UPDATE annotations SET items=?,fetched=?
         WHERE chapter_uid=? AND range=?]])
-    stmt:reset():bind(payload or "[]", fetched and 1 or 0, tostring(chapter_uid), tostring(range)):step()
+    stmt:reset():bind(payload or "[]", fetched and 1 or 0, chapter_uid, range):step()
     stmt:close(); db:close()
 end
 
@@ -98,8 +97,10 @@ function Database:getRanges(file, chapter_uid)
     local db = self:open(file, false)
     if not db then return {} end
     local stmt = db:prepare("SELECT range FROM annotations WHERE chapter_uid=? AND fetched=0 ORDER BY range")
-    local rows, row = {}, stmt:reset():bind(tostring(chapter_uid)):step()
-    while row do rows[#rows + 1] = row[1]; row = stmt:step() end
+    local rows, row = {}, stmt:reset():bind(chapter_uid):step()
+    while row do
+        rows[#rows + 1] = row[1]; row = stmt:step()
+    end
     stmt:close(); db:close(); return rows
 end
 
@@ -109,14 +110,22 @@ function Database:getDocument(file)
     local stmt = db:prepare("SELECT book_id,title,author FROM book WHERE file=?")
     local row = stmt:reset():bind(file):step()
     stmt:close()
-    if not row then db:close(); return nil end
+    if not row then
+        db:close(); return nil
+    end
     local value = { binding = { book_id = row[1], title = row[2], author = row[3] }, records = {} }
-    local records = db:prepare("SELECT chapter_uid,range,text,pos0,pos1,items,fetched FROM annotations WHERE pos0 IS NOT NULL")
+    local records = db:prepare(
+    "SELECT chapter_uid,range,text,pos0,pos1,items,fetched FROM annotations WHERE pos0 IS NOT NULL AND pos0 != ''")
     local item = records:reset():step()
     while item do
         value.records[#value.records + 1] = {
-            chapter_uid = item[1], range = item[2], text = item[3],
-            pos0 = item[4], pos1 = item[5], items = json.decode(item[6] or "[]") or {}, fetched = item[7],
+            chapter_uid = item[1],
+            range = item[2],
+            text = item[3],
+            pos0 = item[4],
+            pos1 = item[5],
+            items = json.decode(item[6] or "[]") or {},
+            fetched = item[7],
         }
         item = records:step()
     end
@@ -160,7 +169,7 @@ function Database:saveChapters(file, chapters)
     db:exec("DELETE FROM chapters")
     local stmt = db:prepare("INSERT INTO chapters(chapter_uid,title,position) VALUES(?,?,?)")
     for i, chapter in ipairs(chapters or {}) do
-        stmt:reset():bind(tostring(chapter.chapterUid), chapter.title or "", i):step()
+        stmt:reset():bind(chapter.chapterUid, chapter.title or "", i):step()
     end
     stmt:close(); db:close()
 end
@@ -170,7 +179,7 @@ function Database:nextChapter(file, chapter_uid)
     if not db then return nil end
     local stmt = db:prepare([[SELECT c2.chapter_uid FROM chapters c1 JOIN chapters c2
         ON c2.position=c1.position+1 WHERE c1.chapter_uid=?]])
-    local row = stmt:reset():bind(tostring(chapter_uid)):step()
+    local row = stmt:reset():bind(chapter_uid):step()
     stmt:close(); db:close(); return row and row[1] or nil
 end
 
@@ -178,7 +187,7 @@ function Database:deleteUnderline(file, chapter_uid, range)
     local db, open_err = self:open(file, true)
     if not db then return nil, open_err end
     local stmt = db:prepare("DELETE FROM annotations WHERE chapter_uid=? AND range=?")
-    stmt:reset():bind(tostring(chapter_uid), tostring(range)):step()
+    stmt:reset():bind(chapter_uid, range):step()
     stmt:close()
     db:close()
 end

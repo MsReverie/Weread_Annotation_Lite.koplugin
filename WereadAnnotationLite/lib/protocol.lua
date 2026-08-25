@@ -7,14 +7,6 @@ Weread.USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit
 Weread.DEFAULT_READER_TOKEN = "3c5c8717f3daf09iop3423zafeqoi"
 Weread.SKILL_VERSION = "1.0.5"
 
-function Weread.is_success_response(result, field)
-    if type(result) ~= "table" then
-        return false
-    end
-    local value = result[field or "succ"]
-    return value == true or tonumber(value) == 1
-end
-
 local function is_digit_string(value)
     return tostring(value):match("^%d+$") ~= nil
 end

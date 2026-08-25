@@ -100,6 +100,9 @@ function QRLogin:_request_json(url, opts, stage)
     if not code then
         return nil, headers, status or "request failed"
     end
+    if code == 304 then
+        return nil, headers, "not modified"
+    end
     if code < 200 or code >= 300 then
         local request_headers = opts.headers or {}
         local cookie_header = header_value(request_headers, "cookie")
@@ -178,7 +181,8 @@ function QRLogin:_poll_protocol(uid, otp)
 
     local headers = {
         ["Accept"] = "application/json, text/plain, */*",
-        ["Referer"] = SKILLS_PAGE_URL,
+        ["Referer"] = BASE_URL .. "/",
+        ["Origin"] = BASE_URL,
     }
     local cookie_header = Cookie.to_header(self.login_cookies or {})
     if cookie_header ~= "" then
@@ -191,7 +195,7 @@ function QRLogin:_poll_protocol(uid, otp)
         headers = headers,
     }, "getLoginInfo")
     if not data then
-        if is_timeout_error(request_error) or request_error == "request failed" then
+        if is_timeout_error(request_error) or request_error == "request failed" or request_error == "not modified" then
             return { transport_pending = true }
         end
         error(request_error)
@@ -279,7 +283,8 @@ function QRLogin:_complete_protocol(login_result, generation)
         end
     end
     if api_key == "" then
-        error(_("No official API key was returned. This account has not enabled Weread Skill.\n\nOpen Weread app → Me → Settings → Weread Skill → Get API Key, then scan again."))
+        error(_(
+            "No official API key was returned. This account has not enabled Weread Skill.\n\nOpen Weread app → Me → Settings → Weread Skill → Get API Key, then scan again."))
     end
     if generation ~= self.generation then
         error("QR login was cancelled")
@@ -355,7 +360,7 @@ function QRLogin:_show_qr(uid, generation)
     local screen_height = Device.screen:getHeight()
     local qr_size = math.floor(math.min(screen_width, screen_height) * 0.72)
     local dialog
-    dialog = QRMessage:new{
+    dialog = QRMessage:new {
         text = BASE_URL .. "/web/confirm?uid=" .. Weread.urlencode(uid),
         -- QRMessage centers its framed content on the screen. Keeping the frame
         -- smaller than the viewport makes it a dismissible popup instead of a
@@ -414,7 +419,7 @@ function QRLogin:_poll(uid, generation, otp)
         end
         self:_close_qr_dialog(true)
         self:cancel()
-            logger.err("login polling failed:", error_text(result))
+        logger.err("login polling failed:", error_text(result))
         self.host:showInfo(T(_("QR login failed:\n%1"), error_text(result)))
         return
     end
@@ -458,7 +463,7 @@ function QRLogin:_show_otp(uid, generation, error_message)
     end
 
     local dialog
-    dialog = InputDialog:new{
+    dialog = InputDialog:new {
         title = _("Verification code required"),
         input = "",
         input_type = "text",

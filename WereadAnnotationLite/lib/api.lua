@@ -1,9 +1,9 @@
 local ltn12 = require("ltn12")
-local logger = require("logger")
 local socketutil = require("socketutil")
 local http = require("socket.http")
 local Cookie = require("WereadAnnotationLite.lib.cookie")
 local Weread = require("WereadAnnotationLite.lib.protocol")
+local logger = require("WereadAnnotationLite.lib.logger")
 
 local ok_json, json = pcall(require, "json")
 if not ok_json then
@@ -97,6 +97,14 @@ end
 local function log_response(label, context, text)
     context = context or {}
     text = text or ""
+    -- 默认只输出基本信息，不输出完整响应体
+    local response_body = ""
+    if logger.isDebug() then
+        response_body = text
+    else
+        response_body = "<hidden> (enable debug_log to see)"
+    end
+
     logger.err(
         label,
         "method=", tostring(context.method or "unknown"),
@@ -105,7 +113,7 @@ local function log_response(label, context, text)
         "status=", tostring(context.code or "unknown"),
         "content_type=", tostring(header_value(context.headers, "content-type") or "unknown"),
         "body_bytes=", tostring(#text),
-        "response_body=", text
+        "response_body=", response_body
     )
 end
 
@@ -140,7 +148,7 @@ local function is_weread_url(url)
         return false
     end
     local host = authority:lower():gsub(":%d+$", "")
-    return host == "weread.qq.com" or host:sub(-#".weread.qq.com") == ".weread.qq.com"
+    return host == "weread.qq.com" or host:sub(- #".weread.qq.com") == ".weread.qq.com"
 end
 
 local function absolute_url(base_url, location)
@@ -205,9 +213,13 @@ function Client:chapters(book_id)
     local rows = normalize_chapters(result)
     local chapters = {}
     for _, row in ipairs(rows or {}) do
-        if row.chapterUid or row.chapterId then
-            row.chapterUid = row.chapterUid or row.chapterId
-            chapters[#chapters + 1] = row
+        -- 集中清洗
+        local uid = row.chapterUid or row.chapterId
+        if uid then
+            chapters[#chapters + 1] = {
+                chapterUid = tostring(uid),
+                title = tostring(row.title or ""),
+            }
         end
     end
     return chapters
@@ -248,7 +260,6 @@ function Client:popular_underlines(book_id, chapter_uid, synckey)
     if result.items then return result.items end
     return result
 end
-
 
 function Client:reviews(book_id, chapter_uid, ranges)
     local batch = self:build_chapter_review_batches(ranges or {})[1] or {}
@@ -420,7 +431,7 @@ function Client:request_follow(opts, max_redirects)
             clear_cross_origin_headers(request_opts.headers)
         end
         if code == 303 or ((code == 301 or code == 302)
-            and request_opts.method ~= "GET" and request_opts.method ~= "HEAD") then
+                and request_opts.method ~= "GET" and request_opts.method ~= "HEAD") then
             request_opts.method = "GET"
             request_opts.body = nil
             request_opts.source = nil
@@ -437,7 +448,6 @@ function Client:request_follow(opts, max_redirects)
     error("Too many redirects")
 end
 
-
 function Client:post_json(url, data, opts)
     opts = opts or {}
     local referer = header_value(opts.headers, "Referer") or opts.referer
@@ -449,7 +459,8 @@ function Client:post_json(url, data, opts)
             ["Content-Type"] = "application/json;charset=UTF-8",
             ["Origin"] = "https://weread.qq.com",
             ["Referer"] = referer or "https://weread.qq.com/",
-        }})
+        }
+    })
     local text, code, resp_headers = self:request(req_opts)
     if code and code >= 200 and code < 300 then
         return self:decode_http_json(text, {
@@ -473,7 +484,8 @@ function Client:get_text(url, opts)
         headers = {
             ["Accept"] = accept or "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             ["Referer"] = referer or "https://weread.qq.com/",
-        }})
+        }
+    })
     local text, code, resp_headers = self:request(req_opts)
     if code and code >= 200 and code < 300 then
         return text, code, resp_headers
@@ -486,7 +498,8 @@ function Client:get_public_text(url, opts)
     local req_opts = merge_req_opts(opts, {
         maxredirects = 5,
         headers = {
-            ["Accept"] = header_value(opts.headers, "Accept") or opts.accept or "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            ["Accept"] = header_value(opts.headers, "Accept") or opts.accept or
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             ["Referer"] = header_value(opts.headers, "Referer") or opts.referer or "https://mp.weixin.qq.com/",
         }
     })
@@ -578,7 +591,6 @@ function Client:gateway(api_name, params, opts)
     end
     return self:post_json("https://i.weread.qq.com/api/agent/gateway", payload, post_opts)
 end
-
 
 function Client:get_book_info(book_id)
     return self:gateway("/book/info", { bookId = book_id })
@@ -708,4 +720,31 @@ function Client:get_review_comments(review_id, count, opts)
     end
     return true, parsed, nil
 end
+
+function Client:parseReviewItems(review)
+    local items = {}
+    local pages = review.pageReviews
+    if type(pages) ~= "table" or next(pages) == nil then
+        pages = review.review and { review } or {}
+    end
+    local page_index = 0
+    for _, page in ipairs(pages) do
+        page_index = page_index + 1
+        local item = page.review or {}
+        local author = item.author or {}
+        local abstract
+        if page_index == 1 then
+            abstract = item.abstract or item.contextAbstract
+            if type(abstract) ~= "string" or abstract == "" then abstract = nil end
+        end
+        items[#items + 1] = {
+            abstract = abstract,
+            author = tostring(author.nick or author.name or "匿名"),
+            content = tostring(item.content or ""),
+            likes_count = tonumber(page.likesCount) or 0,
+        }
+    end
+    return items
+end
+
 return Client

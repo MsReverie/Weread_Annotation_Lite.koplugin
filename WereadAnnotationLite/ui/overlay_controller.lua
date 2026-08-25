@@ -40,7 +40,7 @@ function M.toggleVisibility(plugin)
     if plugin._local_annotation_overlay then
         plugin._local_annotation_overlay.enabled = enabled
         plugin._local_annotation_overlay.visible = {}
-        UIManager:setDirty(plugin.ui, "full")
+        UIManager:setDirty(plugin.ui, "partial")
     end
     return enabled
 end

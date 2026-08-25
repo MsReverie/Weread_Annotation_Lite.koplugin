@@ -102,8 +102,7 @@ local function buildQuoteText(quote)
             quote = first
         end
     end
-    local q = truncateRunes(quote, 50)
-    return "「" .. q .. "」"
+    return "「" .. quote .. "」"
 end
 
 --- Build the block list for a thought popup.
@@ -124,7 +123,7 @@ function ContentBuilder.build(items)
             kind = "paragraph",
             variant = "quote",
             text = quote,
-            fg = require("ffi/blitbuffer").gray(200),
+            fg = require("ffi/blitbuffer").gray(50),
         }
     end
 
@@ -138,7 +137,7 @@ function ContentBuilder.build(items)
             kind = "paragraph",
             variant = "meta",
             text = meta,
-            fg = require("ffi/blitbuffer").gray(250),
+            fg = require("ffi/blitbuffer").gray(100),
         }
 
         local content = trimText(item.content or "")
@@ -157,7 +156,6 @@ function ContentBuilder.build(items)
 
     return blocks
 end
-
 
 --[[--
 Thought popup face factory.
@@ -195,8 +193,8 @@ local FaceFactory = {
 -- Size variants (relative to the base size). quote/meta render one step
 -- smaller; meta is the author line.
 FaceFactory.VARIANTS = {
-    content = 0.9,  -- thought body
-    quote   = 1.0,  -- quoted abstract (italic, gray)
+    content = 0.9,   -- thought body
+    quote   = 1.0,   -- quoted abstract (italic, gray)
     meta    = 0.765, -- author line (0.85em * 0.9)
 }
 
@@ -442,7 +440,7 @@ function FaceFactory:getFace(doc_font_name, size, variant)
     -- (also hand-built to avoid the double DPI scaling).
     if not face then
         local fallback_path = resolveBundledFont(
-            prefer_italic and "NotoSans-Italic.ttf" or "NotoSans-Regular.ttf")
+                prefer_italic and "NotoSans-Italic.ttf" or "NotoSans-Regular.ttf")
             or resolveBundledFont("NotoSansCJKsc-Regular.otf")
         if fallback_path then
             face = self:_buildFace(fallback_path, v_size)
@@ -457,7 +455,5 @@ function FaceFactory:getFace(doc_font_name, size, variant)
     end
     return face
 end
-
-
 
 return { ContentBuilder = ContentBuilder, FaceFactory = FaceFactory }

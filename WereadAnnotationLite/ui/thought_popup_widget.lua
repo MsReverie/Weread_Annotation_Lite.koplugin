@@ -43,7 +43,7 @@ local ThoughtPopupWidget = InputContainer:extend{
         top = Screen:scaleBySize(10),
         bottom = Screen:scaleBySize(10),
     },
-    height_ratio = 0.55,
+    height_ratio = 0.75,
     close_callback = nil,
     dialog = nil,
 
@@ -230,16 +230,27 @@ end
 function ThoughtPopupWidget:onSwipeClose(_, ges)
     local BD = require("ui/bidi")
     local direction = BD.flipDirectionIfMirroredUILayout(ges.direction)
+
     local scroll_dimen = self._scroll_container and self._scroll_container.dimen
-    if scroll_dimen and ges.pos:intersectWith(scroll_dimen) then
-        if direction == "north" or direction == "up" then
-            return self._scroll_container:onScrollText(nil, ges)
-        elseif direction == "south" or direction == "down" then
-            return self._scroll_container:onScrollText(nil, ges)
-        end
+
+    -- 只处理内容区域内的滑动
+    if not scroll_dimen or not ges.pos:intersectWith(scroll_dimen) then
+        return false
+    end
+
+    -- 左右滑动 → 关闭弹窗
+    if direction == "west" or direction == "east" then
+        UIManager:close(self)
         return true
     end
-    if direction == "west" or direction == "east" then return false end
+
+    -- 上下滑动 → 滚动内容
+    if direction == "north" or direction == "up" then
+        return self._scroll_container:onScrollText(nil, ges)
+    elseif direction == "south" or direction == "down" then
+        return self._scroll_container:onScrollText(nil, ges)
+    end
+
     return false
 end
 
