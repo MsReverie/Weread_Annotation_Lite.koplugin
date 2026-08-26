@@ -75,19 +75,11 @@ function Paginator.paginateText(text, face, width)
     }
 end
 
---- Line height, glyph overhang, and first-line baseline (line_height = 0.2).
 function Paginator.textPieceMetrics(face)
-    local line_h = math.floor((1 + 0.2) * face.size + 0.5)
     local face_height, face_ascender = face.ftsize:getHeightAndAscender()
-    local extra = math.max(0, face_height - line_h)
-    local line_heights_diff = math.floor(line_h - face_height)
-    local baseline
-    if line_heights_diff >= 0 then
-        baseline = math.floor(face_ascender + line_heights_diff / 2)
-    else
-        baseline = math.floor(face_ascender)
-    end
-    return line_h, extra, baseline
+    local line_h = math.max(math.floor((1 + 0.2) * face.size + 0.5), face_height)
+    local baseline = math.floor(face_ascender + (line_h - face_height) / 2)
+    return line_h, baseline  
 end
 
 local function shapeLineCached(xtext, line)
@@ -433,10 +425,10 @@ function PageRenderer:paginate()
     local function addTextPiece(variant, text, fg, width, x, keep_next)
         local face = FaceFactory:getFace(self.doc_font_name, base_size, variant)
         if not face then return false end
-        local line_h, extra, baseline = Paginator.textPieceMetrics(face)
+        local line_h, baseline = Paginator.textPieceMetrics(face)
         local paginated = Paginator.paginateText(text, face, width)
         local n_lines = paginated.n_lines
-        local piece_h = n_lines * line_h + extra
+        local piece_h = n_lines * line_h
         local piece_y = y
         pieces[#pieces + 1] = {
             kind = "text", variant = variant, text = text, fg = fg,
@@ -473,7 +465,7 @@ function PageRenderer:paginate()
         if block.kind == "paragraph" then
             if block.variant == "quote" then
                 local quote_face = FaceFactory:getFace(self.doc_font_name, base_size, "quote")
-                local line_h, extra, baseline = Paginator.textPieceMetrics(quote_face)
+                local line_h, baseline = Paginator.textPieceMetrics(quote_face)
                 local spacing = math.floor(line_h * 0.5)
                 addSpacing(spacing)
                 addTextPiece(block.variant, block.text, block.fg, text_w, 0,
