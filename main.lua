@@ -1,19 +1,24 @@
+--[[--
+Weread Annotation Lite plugin.
+
+@module koplugin.wereadannotationlite
+--]]--
+
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local UIManager = require("ui/uimanager")
 local _ = require("gettext")
-local InfoMessage = require("ui/widget/infomessage")
-local ProgressbarDialog = require("ui/widget/progressbardialog")
-local logger = require("WereadAnnotationLite.lib.logger")
+local logger = require("lib.logger")
 
-local Settings = require("WereadAnnotationLite.settings")
-local Database = require("WereadAnnotationLite.lib.database")
-local API = require("WereadAnnotationLite.lib.api")
-local Locator = require("WereadAnnotationLite.lib.locator")
-local Prefetch = require("WereadAnnotationLite.lib.prefetch")
-local OverlayController = require("WereadAnnotationLite.ui.overlay_controller")
+local Settings = require("settings")
+local Database = require("lib.database")
+local API = require("lib.api")
+local Locator = require("lib.locator")
+local Prefetch = require("lib.prefetch")
+local OverlayController = require("ui.overlay_controller")
 
 local Plugin = WidgetContainer:extend {
     name = "wereadannotationlite",
+    is_doc_only = false,
     version = "0.1.0",
 }
 
@@ -22,7 +27,7 @@ function Plugin:init()
     logger.setDebug(self.settings:get("debug_log", false))
     self.database = Database:new(self.settings)
     self.api = API:new(self.settings)
-    self.qr_login = require("WereadAnnotationLite.lib.qr_login"):new(self, self.api, self.settings)
+    self.qr_login = require("lib.qr_login"):new(self, self.api, self.settings)
     self.prefetch = Prefetch:new(self)
     self._reader_session = 0
     self.ui.menu:registerToMainMenu(self)
@@ -32,7 +37,7 @@ function Plugin:addToMainMenu(menu_items)
     local function is_enabled()
         return self.settings:get("show_annotations", true)
     end
-    menu_items.weread_local_annotations = {
+    menu_items.wereadannotationlite = {
         text = _("Weread Annotation Lite"),
         sorting_hint = "tools",
         sub_item_table_func = function()
@@ -54,22 +59,22 @@ function Plugin:addToMainMenu(menu_items)
                             self.prefetch:cancel()
                         elseif self.ui and self.ui.document then
                             -- 若开启，尝试自动预取
-                            local entry = self.database:getDocument(self.ui.document.file)
-                            if entry and entry.binding then
-                                self:prefetchThoughts(false)
+                            local binding = self.database:getBinding(self.ui.document.file)
+                            if binding then
+                                self:prefetchThoughts()
                             end
                         end
                     end
                 },
                 {
-                    text = _("Sync underlines"),
+                    text = _("Fetch underlines"),
                     enabled_func = is_enabled,
                     callback = function()
                         self:syncUnderlines()
                     end
                 },
                 {
-                    text = _("Auto prefetch thoughts"),
+                    text = _("Auto prefetch underlines and thoughts"),
                     enabled_func = is_enabled,
                     checked_func = function()
                         return self.settings:get("prefetch_thoughts", true)
@@ -80,9 +85,9 @@ function Plugin:addToMainMenu(menu_items)
                         self.settings:flush()
                         if new_state then
                             if self.ui and self.ui.document then
-                                local entry = self.database:getDocument(self.ui.document.file)
-                                if entry and entry.binding then
-                                    self:prefetchThoughts(false)
+                                local binding = self.database:getBinding(self.ui.document.file)
+                                if binding then
+                                    self:prefetchThoughts()
                                 end
                             end
                         else
@@ -131,12 +136,6 @@ function Plugin:showInputDialog(dialog)
     UIManager:show(dialog)
 end
 
-function Plugin:showBusy(text)
-end
-
-function Plugin:closeBusy()
-end
-
 function Plugin:runOnlineTask(_label, callback)
     local ok, err = pcall(callback)
     if not ok then
@@ -144,15 +143,6 @@ function Plugin:runOnlineTask(_label, callback)
         return false
     end
     return true
-end
-
-function Plugin:refreshUI()
-end
-
-function Plugin:refreshLoginMenu()
-end
-
-function Plugin:onWereadAccountChanged()
 end
 
 function Plugin:clearCurrentData()
@@ -207,59 +197,179 @@ function Plugin:json_encode(value)
     return json.encode(value)
 end
 
-function Plugin:prefetchThoughts(immediate, silent)
+local function normalize_chapter_title(text)
+    text = tostring(text or "")
+    text = text:gsub("%s+", "")
+    text = text:gsub("[%.%-%(%)%[%]《》【】　]", "")
+    return text
+end
+
+function Plugin:matchTocChapterUid(document, file)
+    local chapters = self._chapter_list
+    if not chapters or #chapters == 0 then
+        chapters = self.database:listChapters(file)
+        self._chapter_list = chapters
+    end
+    if not chapters or #chapters == 0 or type(document.getToc) ~= "function" then
+        return nil
+    end
+    local ok_toc, toc = pcall(document.getToc, document)
+    if not ok_toc or type(toc) ~= "table" or #toc == 0 then
+        return nil
+    end
+    local current_pos = 0
+    if document.getCurrentPos then
+        current_pos = document:getCurrentPos() or 0
+    end
+    local best_toc, best_toc_pos = nil, -math.huge
+    for _, item in ipairs(toc) do
+        local pos = tonumber(item.page)
+        local xp = item.xpointer or item.pos
+        if xp and document.getPosFromXPointer then
+            local okp, value = pcall(document.getPosFromXPointer, document, xp)
+            if okp then pos = tonumber(value) or pos end
+        end
+        if pos and pos <= current_pos and pos >= best_toc_pos then
+            best_toc_pos = pos
+            best_toc = item
+        end
+    end
+    if not best_toc then return nil end
+    local want = normalize_chapter_title(best_toc.title)
+    if want == "" then return nil end
+    for _, chapter in ipairs(chapters) do
+        if normalize_chapter_title(chapter.title) == want then
+            return tostring(chapter.chapterUid)
+        end
+    end
+    local hit
+    for _, chapter in ipairs(chapters) do
+        local title = normalize_chapter_title(chapter.title)
+        if title ~= "" and (want:find(title, 1, true) or title:find(want, 1, true)) then
+            if hit then return nil end
+            hit = chapter
+        end
+    end
+    return hit and tostring(hit.chapterUid) or nil
+end
+
+function Plugin:tocChapterIsAfter(cached_uid, toc_uid, file)
+    if not cached_uid or not toc_uid or cached_uid == toc_uid then return false end
+    local chapters = self._chapter_list
+    if not chapters or #chapters == 0 then
+        chapters = self.database:listChapters(file)
+        self._chapter_list = chapters
+    end
+    local cached_idx, toc_idx
+    cached_uid = tostring(cached_uid)
+    toc_uid = tostring(toc_uid)
+    for i, chapter in ipairs(chapters or {}) do
+        local uid = tostring(chapter.chapterUid)
+        if uid == cached_uid then cached_idx = i end
+        if uid == toc_uid then toc_idx = i end
+    end
+    return cached_idx and toc_idx and toc_idx > cached_idx
+end
+
+function Plugin:currentWereadChapterUid(opts)
+    opts = opts or {}
+    local document = self.ui and self.ui.document
+    local file = document and document.file
+    if not file then return nil end
+
+    if document.getCurrentPos and type(document.getPosFromXPointer) == "function" then
+        local starts = self._chapter_starts
+        if not starts then
+            local records = self._local_annotation_overlay and self._local_annotation_overlay.records
+            starts = {}
+            local seen = {}
+            for _, record in ipairs(records or {}) do
+                local ok, position = pcall(document.getPosFromXPointer, document, record.pos0)
+                position = ok and tonumber(position) or nil
+                if position and record.chapter_uid then
+                    local uid = tostring(record.chapter_uid)
+                    if not seen[uid] or position < seen[uid] then
+                        seen[uid] = position
+                    end
+                end
+            end
+            for uid, position in pairs(seen) do
+                starts[#starts + 1] = { uid = uid, pos = position }
+            end
+            table.sort(starts, function(a, b) return a.pos < b.pos end)
+            self._chapter_starts = starts
+        end
+        if #starts > 0 then
+            local current = document:getCurrentPos() or 0
+            local chapter
+            local later = false
+            for _, item in ipairs(starts) do
+                if item.pos <= current then
+                    chapter = item.uid
+                else
+                    later = true
+                    break
+                end
+            end
+            if chapter and later then
+                return chapter
+            end
+            if chapter and not later then
+                local toc_uid = self:matchTocChapterUid(document, file)
+                if self:tocChapterIsAfter(chapter, toc_uid, file) then
+                    return toc_uid
+                end
+                return chapter
+            end
+        end
+    end
+
+    if not opts.allow_toc then return nil end
+    return self:matchTocChapterUid(document, file)
+end
+
+function Plugin:onChapterMaybeChanged()
+    if self._thought_open then return end
+    if not self.settings:get("show_annotations", true) then return end
+    if not self.settings:get("prefetch_thoughts", true) then return end
+    if not (self.ui and self.ui.document) then return end
+    local uid = self:currentWereadChapterUid()
+    if not uid or uid == self._seen_chapter_uid then return end
+    self._seen_chapter_uid = uid
+    self.prefetch:afterChapterTurn(uid)
+end
+
+function Plugin:prefetchThoughts(silent)
     if not self.settings:get("show_annotations", true) then
         return
     end
 
     local file = self.ui.document and self.ui.document.file
-    local entry = file and self.database:getDocument(file)
+    local binding = file and self.database:getBinding(file)
 
     if silent == nil then
         silent = not self.settings:get("prefetch_notify", false)
     end
-    -- 没有绑定 → 不预取
-    if not entry or not entry.binding then
+    if not binding then
         if not silent then
             self:showTransientInfo(_("Match this local book first."))
         end
         return
     end
 
-    -- 没有划线记录 → 不预取
-    if not entry.records or #entry.records == 0 then
-        if not silent then
-            self:showTransientInfo(_("No underlines yet. Sync first."))
-        end
-        return
-    end
-
-    -- 定位当前章节
-    local chapter
-    local document = self.ui and self.ui.document
-    local current = document and document.getCurrentPos and document:getCurrentPos() or 0
-    local best_pos = -math.huge
-    for _, record in ipairs(entry.records) do
-        local ok, position = pcall(document.getPosFromXPointer, document, record.pos0)
-        position = ok and position or nil
-        if position and position <= current and position >= best_pos then
-            best_pos = position
-            chapter = record.chapter_uid
-        end
-    end
-    chapter = chapter or (entry.records[1] and entry.records[1].chapter_uid)
-
+    self.prefetch:ensureCatalog(file, binding)
+    local chapter = self:currentWereadChapterUid({ allow_toc = true })
     if not chapter then
         if not silent then
-            self:showTransientInfo(_("Sync underlines first."))
+            self:showTransientInfo(_("Could not detect the current chapter."))
         end
         return
     end
 
-    -- 启动预取
-    self.prefetch:start(file, entry.binding, chapter, immediate)
+    self._seen_chapter_uid = chapter
+    self.prefetch:onChapter(chapter)
     if not silent then
-        self:showTransientInfo(_("Thought prefetch started."), 2)
+        self:showTransientInfo(_("Prefetch started."), 2)
     end
 end
 
@@ -267,9 +377,15 @@ function Plugin:openThought(record)
     if not self.settings:get("show_annotations", true) then
         return true
     end
+    self._thought_open = true
+    self.prefetch:pause()
     local file = self.ui.document and self.ui.document.file
-    local entry = file and self.database:getDocument(file)
-    if not entry or not entry.binding then return true end
+    local binding = file and self.database:getBinding(file)
+    if not binding then
+        self._thought_open = false
+        self.prefetch:resume()
+        return true
+    end
     local items = type(record.items) == "table" and record.items or {}
     local chapter_uid = record.chapter_uid
     local loading
@@ -277,7 +393,7 @@ function Plugin:openThought(record)
         local InfoMessage = require("ui/widget/infomessage")
         loading = InfoMessage:new { text = _("Loading thoughts…") }
         UIManager:show(loading)
-        local ok, result = pcall(self.api.reviews, self.api, entry.binding.book_id,
+        local ok, result = pcall(self.api.reviews, self.api, binding.book_id,
             chapter_uid, { record.range })
         if ok and result and result.reviews then
             for _, range_review in ipairs(result.reviews) do
@@ -288,22 +404,33 @@ function Plugin:openThought(record)
             end
             self.database:saveThoughts(file, record.chapter_uid, record.range,
                 self:json_encode(items), true)
+            if self._local_annotation_overlay then
+                self._local_annotation_overlay:updateThought(record.chapter_uid, record.range, items)
+            end
         elseif not ok then
             UIManager:close(loading)
+            self._thought_open = false
+            self.prefetch:resume()
             self:showInfo(tostring(result))
             return true
         end
         UIManager:close(loading)
     end
     if #items == 0 then
+        self._thought_open = false
+        self.prefetch:resume()
         self:showTransientInfo(_("No thoughts were returned for this underline."), 3)
         return true
     end
-    require("WereadAnnotationLite.ui.thought_popup").show {
+    require("ui.thought_popup").show {
         pages = items,
         position = "bottom",
         height_ratio = 0.75,
         doc_font_size = require("device").screen:scaleBySize(22),
+        close_callback = function()
+            self._thought_open = false
+            self.prefetch:resume()
+        end,
     }
     return true
 end
@@ -405,15 +532,23 @@ function Plugin:syncUnderlines()
         return
     end
 
-    -- 检查是否有绑定
-    local entry = self.database:getDocument(file)
-    if entry and entry.binding then
-        self:doSyncUnderlines()
+    local binding = self.database:getBinding(file)
+    if binding then
+        self.prefetch:request({
+            force = true,
+            from_current = true,
+            respect_cooldown = true,
+            notify = true,
+        })
     else
-        -- 没有绑定，启动匹配流程
         self:matchBookAndThen(function(success)
             if success then
-                self:doSyncUnderlines()
+                self.prefetch:request({
+                    force = true,
+                    from_start = true,
+                    respect_cooldown = false,
+                    notify = true,
+                })
             else
                 self:showInfo(_("Sync cancelled."))
             end
@@ -421,172 +556,18 @@ function Plugin:syncUnderlines()
     end
 end
 
-function Plugin:doSyncUnderlines()
-    -- 取消正在进行的预取
-    self.prefetch:cancel()
-
-    local file = self.ui.document and self.ui.document.file
-    local entry = self.database:getDocument(file)
-    if not entry or not entry.binding then
-        self:showInfo(_("Match this local book first."))
-        return
-    end
-
-    -- 获取章节列表
-    local ok, chapters = pcall(self.api.chapters, self.api, entry.binding.book_id)
-    if not ok or type(chapters) ~= "table" or #chapters == 0 then
-        if not ok and (tostring(chapters):find("-2012", 1, true)
-                or tostring(chapters):find("登录超时", 1, true)) then
-            self:showInfo(_("Weread login has expired. Please use Weread QR login again."))
-            return
-        end
-        local error_msg = ok and _("Could not load the Weread chapter list.") or tostring(chapters)
-        self:showInfo(error_msg .. "\n" .. _("Please log in first."))
-        return
-    end
-
-    self.database:saveChapters(file, chapters)
-
-    -- 创建进度条
-    local dialog = ProgressbarDialog:new {
-        title = _("Syncing underlines..."),
-        progress_max = #chapters,
-    }
-    UIManager:show(dialog)
-
-    -- 收集结果
-    local all_located = {}
-    local failed_count = 0
-    local last_error_msg = nil
-    local completed = 0
-
-    -- 协程主流程
-    local co = coroutine.create(function()
-        -- 逐个处理章节（可调并发数，此处改为顺序，但可以轻松改为并发）
-        for idx, chapter in ipairs(chapters) do
-            local chapter_uid = chapter.chapterUid
-
-            -- 1. 检查缓存
-            local cache = self.database:getUnderlineCache(file, chapter_uid)
-            if cache then
-                local rows = cache.items or {}
-                if #rows > 0 then
-                    table.sort(rows, function(a, b)
-                        local ac = tonumber(a.count or a.totalCount) or 0
-                        local bc = tonumber(b.count or b.totalCount) or 0
-                        if ac ~= bc then return ac > bc end
-                        local as = tonumber(a.score) or 0
-                        local bs = tonumber(b.score) or 0
-                        if as ~= bs then return as > bs end
-                        return tostring(a.range or "") < tostring(b.range or "")
-                    end)
-                    local located = Locator.locate(self.ui.document, chapter_uid, rows)
-                    for _, record in ipairs(located) do
-                        table.insert(all_located, record)
-                    end
-                end
-                completed = completed + 1
-                dialog:reportProgress(completed)
-                coroutine.yield()
-            else
-                -- 2. 无缓存，发起网络请求（单次，失败即终止）
-                local ok_req, result = pcall(self.api.popular_underlines_sync, self.api,
-                    entry.binding.book_id, chapter_uid, 0)
-                if not ok_req or not result then
-                    local err_msg = tostring(result or "Unknown error")
-                    last_error_msg = err_msg
-                    UIManager:close(dialog)
-                    error("Sync failed at chapter " .. tostring(idx) .. ": " .. err_msg)
-                end
-
-                local data = result
-                local rows = data.items or {}
-                self.database:saveUnderlineCache(file, chapter_uid, data.synckey, rows)
-                if #rows > 0 then
-                    table.sort(rows, function(a, b)
-                        local ac = tonumber(a.count or a.totalCount) or 0
-                        local bc = tonumber(b.count or b.totalCount) or 0
-                        if ac ~= bc then return ac > bc end
-                        local as = tonumber(a.score) or 0
-                        local bs = tonumber(b.score) or 0
-                        if as ~= bs then return as > bs end
-                        return tostring(a.range or "") < tostring(b.range or "")
-                    end)
-                    local located = Locator.locate(self.ui.document, chapter_uid, rows)
-                    for _, record in ipairs(located) do
-                        table.insert(all_located, record)
-                    end
-                end
-                completed = completed + 1
-                dialog:reportProgress(completed)
-                coroutine.yield()
-            end
-        end
-
-        -- 所有章节处理完毕
-        UIManager:close(dialog)
-        UIManager:setDirty("all", "full")
-
-        -- 保存结果
-        if #all_located > 0 then
-            if failed_count == 0 then
-                self.database:clearRecords(file)
-            end
-            self.database:saveRecords(file, all_located)
-            if self._local_annotation_overlay then
-                self._local_annotation_overlay:setRecords(all_located)
-            end
-        end
-
-        local summary = string.format(
-            _("Matched %d popular underlines; fetched %d/%d chapters."),
-            #all_located, #chapters - failed_count, #chapters, failed_count
-        )
-        if #all_located == 0 and #chapters > 0 then
-            summary = summary ..
-                "\n" .. _("No downloaded underlines matched this local book; existing data was kept.")
-        end
-        if last_error_msg then
-            summary = summary .. "\n" .. tostring(last_error_msg)
-        end
-
-        -- 显示信息弹窗
-        UIManager:show(InfoMessage:new {
-            text = summary,
-            callback = function()
-                UIManager:setDirty("all", "full")
-                self.prefetch:scheduleRestore()
-            end
-        })
-        return -- 协程结束
-    end)
-
-    -- 启动协程调度
-    local function resume_co()
-        local status, err = coroutine.resume(co)
-        if not status then
-            logger.err("Sync coroutine error:", err)
-            UIManager:close(dialog)
-            self:showInfo(_("Sync failed: ") .. tostring(err))
-        elseif coroutine.status(co) ~= "dead" then
-            -- 协程未结束，安排下一次继续执行（保证 UI 刷新）
-            UIManager:scheduleIn(0.05, resume_co)
-        end
-    end
-
-    -- 开始执行
-    resume_co()
-end
-
 function Plugin:onReaderReady()
     self._reader_session = self._reader_session + 1
+    self._seen_chapter_uid = nil
+    self._chapter_starts = nil
+    self._thought_open = false
     OverlayController.onReaderReady(self)
     if self.settings:get("prefetch_thoughts", true) then
         UIManager:scheduleIn(0.8, function()
             if self.ui and self.ui.document and self.ui.document.file then
-                local entry = self.database:getDocument(self.ui.document.file)
-                if entry and entry.binding then
-                    self:prefetchThoughts(false)
+                local binding = self.database:getBinding(self.ui.document.file)
+                if binding then
+                    self:prefetchThoughts()
                 end
             end
         end)
@@ -595,10 +576,16 @@ end
 
 function Plugin:onPageUpdate()
     OverlayController.onPageUpdate(self)
+    if self._thought_open then return end
+    self:onChapterMaybeChanged()
 end
 
 function Plugin:onCloseDocument()
     self._reader_session = self._reader_session + 1
+    self._seen_chapter_uid = nil
+    self._chapter_list = nil
+    self._chapter_starts = nil
+    self._thought_open = false
     self.prefetch:cancel()
     OverlayController.onCloseDocument(self)
 end
