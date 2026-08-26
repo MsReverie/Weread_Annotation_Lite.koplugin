@@ -35,7 +35,6 @@ function Plugin:addToMainMenu(menu_items)
     menu_items.weread_local_annotations = {
         text = _("Weread Annotation Lite"),
         sorting_hint = "tools",
-        --获取总开关状态
         sub_item_table_func = function()
             return {
                 {
@@ -190,7 +189,17 @@ function Plugin:showList(title, items, empty_text)
         self:showInfo(empty_text or _("No items.")); return
     end
     local MenuWidget = require("ui/widget/menu")
-    UIManager:show(MenuWidget:new { title = title, item_table = items })
+    local menu = MenuWidget:new { title = title, item_table = items }
+    for _, item in ipairs(items) do
+        local orig_cb = item.callback
+        if orig_cb then
+            item.callback = function(...)
+                UIManager:close(menu)
+                if orig_cb then orig_cb(...) end
+            end
+        end
+    end
+    UIManager:show(menu)
 end
 
 function Plugin:json_encode(value)
@@ -305,12 +314,17 @@ function Plugin:matchBookAndThen(callback)
         if callback then callback(false) end
         return
     end
-
+    local raw_name = file:match("([^/]+)%.[^%.]+$") or ""
+    local cleaned_name = raw_name
+        :gsub("%s*（.-）", "")
+        :gsub("%s*%(.-%)", "")
+        :gsub("^%s+", "")
+        :gsub("%s+$", "")
     local InputDialog = require("ui/widget/inputdialog")
     local dialog
     dialog = InputDialog:new {
         title = _("Search Weread book"),
-        input = file:match("([^/]+)%.[^%.]+$") or "",
+        input = cleaned_name,
         buttons = { {
             {
                 text = _("Cancel"),
@@ -408,7 +422,9 @@ function Plugin:syncUnderlines()
 end
 
 function Plugin:doSyncUnderlines()
+    -- 取消正在进行的预取
     self.prefetch:cancel()
+
     local file = self.ui.document and self.ui.document.file
     local entry = self.database:getDocument(file)
     if not entry or not entry.binding then
@@ -416,6 +432,7 @@ function Plugin:doSyncUnderlines()
         return
     end
 
+    -- 获取章节列表
     local ok, chapters = pcall(self.api.chapters, self.api, entry.binding.book_id)
     if not ok or type(chapters) ~= "table" or #chapters == 0 then
         if not ok and (tostring(chapters):find("-2012", 1, true)
@@ -423,7 +440,6 @@ function Plugin:doSyncUnderlines()
             self:showInfo(_("Weread login has expired. Please use Weread QR login again."))
             return
         end
-
         local error_msg = ok and _("Could not load the Weread chapter list.") or tostring(chapters)
         self:showInfo(error_msg .. "\n" .. _("Please log in first."))
         return
@@ -431,169 +447,29 @@ function Plugin:doSyncUnderlines()
 
     self.database:saveChapters(file, chapters)
 
+    -- 创建进度条
     local dialog = ProgressbarDialog:new {
         title = _("Syncing underlines..."),
         progress_max = #chapters,
     }
     UIManager:show(dialog)
 
-    -- 并发控制
-    local CONCURRENCY = tonumber(self.settings:get("sync_concurrency", 5)) or 5
-    local BASE_INTERVAL = tonumber(self.settings:get("sync_base_interval", 0.6)) or 0.6
-    local JITTER_MAX = tonumber(self.settings:get("sync_jitter_max", 0.3)) or 0.3
-    local last_request_time = 0
-
-    local pending = {}
-    for i, ch in ipairs(chapters) do
-        table.insert(pending, { index = i, chapter = ch })
-    end
-
-    local running = 0
-    local completed = 0
+    -- 收集结果
     local all_located = {}
     local failed_count = 0
     local last_error_msg = nil
-    local finished = false
+    local completed = 0
 
-    local function updateProgress(completed)
-        dialog:reportProgress(completed)
-    end
+    -- 协程主流程
+    local co = coroutine.create(function()
+        -- 逐个处理章节（可调并发数，此处改为顺序，但可以轻松改为并发）
+        for idx, chapter in ipairs(chapters) do
+            local chapter_uid = chapter.chapterUid
 
-    local function processNext()
-        -- 如果已完成或用户取消，则停止
-        if finished or dialog.cancelled then
-            if not finished then
-                finished = true
-                UIManager:close(dialog)
-                -- 取消时不恢复预取
-            end
-            return
-        end
-
-        if #pending == 0 and running == 0 then
-            finished = true
-            UIManager:close(dialog)
-
-            -- 保存匹配到的划线到数据库
-            if #all_located > 0 then
-                if failed_count == 0 then
-                    self.database:clearRecords(file)
-                end
-                self.database:saveRecords(file, all_located)
-                if self._local_annotation_overlay then
-                    self._local_annotation_overlay:setRecords(all_located)
-                end
-            end
-
-            local summary = string.format(
-                _("Matched %d popular underlines; fetched %d/%d chapters; %d failed."),
-                #all_located, #chapters - failed_count, #chapters, failed_count
-            )
-            if #all_located == 0 and #chapters > 0 then
-                summary = summary ..
-                    "\n" .. _("No downloaded underlines matched this local book; existing data was kept.")
-            end
-            if last_error_msg then
-                summary = summary .. "\n" .. tostring(last_error_msg)
-            end
-            self:showInfo(summary)
-
-            -- 正常完成，延迟恢复预取
-            self.prefetch:scheduleRestore()
-            return
-        end
-
-        -- 如果并发已满或没有待处理任务，则返回
-        if running >= CONCURRENCY then return end
-        if #pending == 0 then return end
-
-        -- 检查请求间隔（带随机抖动）
-        local now = os.clock()
-        local elapsed = now - last_request_time
-        local target_interval = BASE_INTERVAL + math.random() * JITTER_MAX
-        local wait = target_interval - elapsed
-
-        if wait > 0 then
-            UIManager:scheduleIn(wait, function()
-                processNext()
-            end)
-            return
-        end
-
-        -- 更新上次请求时间
-        last_request_time = os.clock()
-
-        local task = table.remove(pending, 1)
-        local chapter = task.chapter
-        local chapter_uid = chapter.chapterUid
-
-        -- 检查是否有缓存
-        local cache = self.database:getUnderlineCache(file, chapter_uid)
-        if cache then
-            -- 有缓存，直接使用缓存数据，不发起网络请求
-            local rows = cache.items or {}
-            if #rows > 0 then
-                table.sort(rows, function(a, b)
-                    local ac = tonumber(a.count or a.totalCount) or 0
-                    local bc = tonumber(b.count or b.totalCount) or 0
-                    if ac ~= bc then return ac > bc end
-                    local as = tonumber(a.score) or 0
-                    local bs = tonumber(b.score) or 0
-                    if as ~= bs then return as > bs end
-                    return tostring(a.range or "") < tostring(b.range or "")
-                end)
-
-                local located = Locator.locate(self.ui.document, chapter_uid, rows)
-                for _, record in ipairs(located) do
-                    table.insert(all_located, record)
-                end
-            end
-
-            -- 更新进度，继续处理下一个任务（不消耗 running 槽位）
-            completed = completed + 1
-            updateProgress(completed)
-            processNext()
-            return
-        end
-
-        -- 无缓存，需要发起网络请求
-        running = running + 1
-
-        UIManager:scheduleIn(0, function()
-            local function doRequest(retry)
-                -- 每次请求前检查取消状态
-                if dialog.cancelled then
-                    running = running - 1
-                    processNext()
-                    return
-                end
-
-                retry = retry or 0
-                local ok, data = pcall(self.api.popular_underlines_sync, self.api,
-                    entry.binding.book_id, chapter_uid, 0)  -- 首次请求 synckey=0
-
-                if not ok then
-                    if retry < 3 then
-                        local delay = 1 * (2 ^ retry)
-                        UIManager:scheduleIn(delay, function()
-                            doRequest(retry + 1)
-                        end)
-                        return
-                    else
-                        failed_count = failed_count + 1
-                        last_error_msg = tostring(data)
-                        running = running - 1
-                        completed = completed + 1
-                        updateProgress(completed)
-                        processNext()
-                        return
-                    end
-                end
-
-                local rows = data.items or {}
-                -- 保存缓存
-                self.database:saveUnderlineCache(file, chapter_uid, data.synckey, rows)
-
+            -- 1. 检查缓存
+            local cache = self.database:getUnderlineCache(file, chapter_uid)
+            if cache then
+                local rows = cache.items or {}
                 if #rows > 0 then
                     table.sort(rows, function(a, b)
                         local ac = tonumber(a.count or a.totalCount) or 0
@@ -604,26 +480,102 @@ function Plugin:doSyncUnderlines()
                         if as ~= bs then return as > bs end
                         return tostring(a.range or "") < tostring(b.range or "")
                     end)
-
                     local located = Locator.locate(self.ui.document, chapter_uid, rows)
                     for _, record in ipairs(located) do
                         table.insert(all_located, record)
                     end
                 end
-
-                running = running - 1
                 completed = completed + 1
-                updateProgress(completed)
-                processNext()
+                dialog:reportProgress(completed)
+                coroutine.yield()
+            else
+                -- 2. 无缓存，发起网络请求（单次，失败即终止）
+                local ok_req, result = pcall(self.api.popular_underlines_sync, self.api,
+                    entry.binding.book_id, chapter_uid, 0)
+                if not ok_req or not result then
+                    local err_msg = tostring(result or "Unknown error")
+                    last_error_msg = err_msg
+                    UIManager:close(dialog)
+                    error("Sync failed at chapter " .. tostring(idx) .. ": " .. err_msg)
+                end
+
+                local data = result
+                local rows = data.items or {}
+                self.database:saveUnderlineCache(file, chapter_uid, data.synckey, rows)
+                if #rows > 0 then
+                    table.sort(rows, function(a, b)
+                        local ac = tonumber(a.count or a.totalCount) or 0
+                        local bc = tonumber(b.count or b.totalCount) or 0
+                        if ac ~= bc then return ac > bc end
+                        local as = tonumber(a.score) or 0
+                        local bs = tonumber(b.score) or 0
+                        if as ~= bs then return as > bs end
+                        return tostring(a.range or "") < tostring(b.range or "")
+                    end)
+                    local located = Locator.locate(self.ui.document, chapter_uid, rows)
+                    for _, record in ipairs(located) do
+                        table.insert(all_located, record)
+                    end
+                end
+                completed = completed + 1
+                dialog:reportProgress(completed)
+                coroutine.yield()
             end
+        end
 
-            doRequest(0)
-        end)
+        -- 所有章节处理完毕
+        UIManager:close(dialog)
+        UIManager:setDirty("all", "full")
+
+        -- 保存结果
+        if #all_located > 0 then
+            if failed_count == 0 then
+                self.database:clearRecords(file)
+            end
+            self.database:saveRecords(file, all_located)
+            if self._local_annotation_overlay then
+                self._local_annotation_overlay:setRecords(all_located)
+            end
+        end
+
+        local summary = string.format(
+            _("Matched %d popular underlines; fetched %d/%d chapters."),
+            #all_located, #chapters - failed_count, #chapters, failed_count
+        )
+        if #all_located == 0 and #chapters > 0 then
+            summary = summary ..
+                "\n" .. _("No downloaded underlines matched this local book; existing data was kept.")
+        end
+        if last_error_msg then
+            summary = summary .. "\n" .. tostring(last_error_msg)
+        end
+
+        -- 显示信息弹窗
+        UIManager:show(InfoMessage:new {
+            text = summary,
+            callback = function()
+                UIManager:setDirty("all", "full")
+                self.prefetch:scheduleRestore()
+            end
+        })
+        return -- 协程结束
+    end)
+
+    -- 启动协程调度
+    local function resume_co()
+        local status, err = coroutine.resume(co)
+        if not status then
+            logger.err("Sync coroutine error:", err)
+            UIManager:close(dialog)
+            self:showInfo(_("Sync failed: ") .. tostring(err))
+        elseif coroutine.status(co) ~= "dead" then
+            -- 协程未结束，安排下一次继续执行（保证 UI 刷新）
+            UIManager:scheduleIn(0.05, resume_co)
+        end
     end
 
-    for _ = 1, CONCURRENCY do
-        processNext()
-    end
+    -- 开始执行
+    resume_co()
 end
 
 function Plugin:onReaderReady()

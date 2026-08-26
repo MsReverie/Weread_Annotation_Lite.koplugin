@@ -533,6 +533,8 @@ function Client:gateway(api_name, params, opts)
         skip_cookie = true,
         headers = {
             ["Authorization"] = "Bearer " .. api_key,
+            ["X-WR-Ticket"] = self.settings:get("wr_ticket", ""),
+            ["X-WRPA-0"] = self.settings:get("wr_wrpa", ""),
         },
     }
     -- Optional shorter timeout for interactive thought fetches (avoids long UI stalls).

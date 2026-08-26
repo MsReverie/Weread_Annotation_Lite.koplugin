@@ -1,4 +1,5 @@
 local UIManager = require("ui/uimanager")
+local _ = require("gettext")
 
 local Prefetch = {}
 Prefetch.__index = Prefetch
@@ -78,6 +79,11 @@ function Prefetch:start(file, binding, chapter_uid, immediate)
             UIManager:scheduleIn(0.8 * (2 ^ (job.retry - 1)), step)
         else
             self.job = nil
+            -- 弹出提示，告知用户预取失败
+            self.plugin:showTransientInfo(
+                _("Thought prefetch failed after multiple retries. Please try again later."),
+                3
+            )
         end
     end
     UIManager:scheduleIn(immediate and 0.1 or 1.0, step)

@@ -213,6 +213,7 @@ function QRLogin:_authenticated_get(url, cookies, web_login_vid, access_token, s
                 headers = {
                     ["Accept"] = "application/json, text/plain, */*",
                     ["Referer"] = SKILLS_PAGE_URL,
+                    ["Origin"] = "https://weread.qq.com",
                     ["Cookie"] = Cookie.to_header(cookies),
                     ["X-Vid"] = web_login_vid,
                     ["X-Skey"] = access_token,
