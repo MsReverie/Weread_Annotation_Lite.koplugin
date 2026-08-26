@@ -75,25 +75,6 @@ local function deepcopy(value)
     return out
 end
 
-local function table_summary(value)
-    if type(value) ~= "table" then
-        return type(value)
-    end
-    local count = 0
-    for _key in pairs(value) do
-        count = count + 1
-    end
-    return "table(" .. tostring(count) .. ")"
-end
-
-local function log_error(err)
-    local text = tostring(err):gsub("[%c]+", " ")
-    if #text > 500 then
-        return text:sub(1, 500) .. "..."
-    end
-    return text
-end
-
 local function log_response(label, context, text)
     context = context or {}
     text = text or ""
@@ -228,37 +209,6 @@ end
 function Client:search(keyword)
     local result = self:gateway("/store/search", { keyword = keyword, count = 20 })
     return result.books or result.results and result.results.books or result
-end
-
-function Client:underlines(book_id, chapter_uid)
-    local ok, result, err = self:get_chapter_underlines(book_id, chapter_uid)
-    if not ok then error(err or "underlines request failed") end
-    return result
-end
-
-function Client:popular_underlines_sync(book_id, chapter_uid, synckey)
-    local result = self:gateway("/book/bestbookmarks", {
-        bookId = tostring(book_id),
-        chapterUid = tonumber(chapter_uid) or error("invalid chapter_uid"),
-        synckey = tonumber(synckey) or 0,
-    })
-    if type(result) ~= "table" then error("bestbookmarks: gateway returned non-table") end
-    local items = result.items
-    if type(items) ~= "table" then items = result.underlines end
-    if type(items) ~= "table" then items = result.updated end
-    if type(items) ~= "table" then items = {} end
-    return {
-        items = items or {},
-        synckey = tonumber(result.synckey) or tonumber(synckey) or 0,
-        unchanged = tonumber(synckey) and tonumber(synckey) ~= 0
-            and tonumber(result.synckey) == tonumber(synckey),
-    }
-end
-
-function Client:popular_underlines(book_id, chapter_uid, synckey)
-    local result = self:popular_underlines_sync(book_id, chapter_uid, synckey)
-    if result.items then return result.items end
-    return result
 end
 
 function Client:reviews(book_id, chapter_uid, ranges)
@@ -622,6 +572,25 @@ function Client:build_chapter_review_batches(ranges)
     return batches
 end
 
+function Client:popular_underlines_sync(book_id, chapter_uid, synckey)
+    local result = self:gateway("/book/bestbookmarks", {
+        bookId = tostring(book_id),
+        chapterUid = tonumber(chapter_uid) or error("invalid chapter_uid"),
+        synckey = tonumber(synckey) or 0,
+    })
+    if type(result) ~= "table" then error("bestbookmarks: gateway returned non-table") end
+    local items = result.items
+    if type(items) ~= "table" then items = result.underlines end
+    if type(items) ~= "table" then items = result.updated end
+    if type(items) ~= "table" then items = {} end
+    return {
+        items = items or {},
+        synckey = tonumber(result.synckey) or tonumber(synckey) or 0,
+        unchanged = tonumber(synckey) and tonumber(synckey) ~= 0
+            and tonumber(result.synckey) == tonumber(synckey),
+    }
+end
+
 function Client:get_chapter_reviews_batch(book_id, chapter_uid, batch, opts)
     opts = opts or {}
     if not book_id or tostring(book_id) == "" then
@@ -652,31 +621,6 @@ function Client:get_chapter_reviews_batch(book_id, chapter_uid, batch, opts)
         return false, nil, "readreviews: gateway returned invalid data"
     end
     return true, result
-end
-
-function Client:get_chapter_reviews(book_id, chapter_uid, ranges)
-    if type(ranges) ~= "table" or #ranges == 0 then
-        return true, { reviews = {} }
-    end
-
-    local all_reviews = {}
-    local batches = self:build_chapter_review_batches(ranges)
-    local socket_ok, socket = pcall(require, "socket")
-
-    for batch_index, batch in ipairs(batches) do
-        local ok, result = self:get_chapter_reviews_batch(book_id, chapter_uid, batch)
-        if ok and type(result) == "table" and type(result.reviews) == "table" then
-            for _, review in ipairs(result.reviews) do
-                all_reviews[#all_reviews + 1] = review
-            end
-        end
-
-        if batch_index < #batches and socket_ok and socket.sleep then
-            socket.sleep(0.3)
-        end
-    end
-
-    return true, { reviews = all_reviews }
 end
 
 function Client:get_review_comments(review_id, count, opts)

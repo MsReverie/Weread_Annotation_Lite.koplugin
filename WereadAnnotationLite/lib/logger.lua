@@ -3,7 +3,7 @@ if not ok then
     base_logger = nil
 end
 
-local LEVELS = { "dbg", "info", "warn", "err" }
+local LEVELS = {"info", "warn", "err" }
 local debug_enabled = false
 
 local function build(prefix)

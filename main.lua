@@ -437,7 +437,7 @@ function Plugin:doSyncUnderlines()
     }
     UIManager:show(dialog)
 
-    -- ========== 并发控制 ==========
+    -- 并发控制
     local CONCURRENCY = tonumber(self.settings:get("sync_concurrency", 5)) or 5
     local BASE_INTERVAL = tonumber(self.settings:get("sync_base_interval", 0.6)) or 0.6
     local JITTER_MAX = tonumber(self.settings:get("sync_jitter_max", 0.3)) or 0.3
@@ -465,7 +465,7 @@ function Plugin:doSyncUnderlines()
             if not finished then
                 finished = true
                 UIManager:close(dialog)
-                restorePrefetch()
+                -- 取消时不恢复预取
             end
             return
         end
@@ -497,10 +497,13 @@ function Plugin:doSyncUnderlines()
                 summary = summary .. "\n" .. tostring(last_error_msg)
             end
             self:showInfo(summary)
-            restorePrefetch()
+
+            -- 正常完成，延迟恢复预取
+            self.prefetch:scheduleRestore()
             return
         end
 
+        -- 如果并发已满或没有待处理任务，则返回
         if running >= CONCURRENCY then return end
         if #pending == 0 then return end
 
@@ -517,13 +520,44 @@ function Plugin:doSyncUnderlines()
             return
         end
 
-        -- 更新上次请求时间，立即发起新请求
+        -- 更新上次请求时间
         last_request_time = os.clock()
 
         local task = table.remove(pending, 1)
-        running = running + 1
         local chapter = task.chapter
         local chapter_uid = chapter.chapterUid
+
+        -- 检查是否有缓存
+        local cache = self.database:getUnderlineCache(file, chapter_uid)
+        if cache then
+            -- 有缓存，直接使用缓存数据，不发起网络请求
+            local rows = cache.items or {}
+            if #rows > 0 then
+                table.sort(rows, function(a, b)
+                    local ac = tonumber(a.count or a.totalCount) or 0
+                    local bc = tonumber(b.count or b.totalCount) or 0
+                    if ac ~= bc then return ac > bc end
+                    local as = tonumber(a.score) or 0
+                    local bs = tonumber(b.score) or 0
+                    if as ~= bs then return as > bs end
+                    return tostring(a.range or "") < tostring(b.range or "")
+                end)
+
+                local located = Locator.locate(self.ui.document, chapter_uid, rows)
+                for _, record in ipairs(located) do
+                    table.insert(all_located, record)
+                end
+            end
+
+            -- 更新进度，继续处理下一个任务（不消耗 running 槽位）
+            completed = completed + 1
+            updateProgress(completed)
+            processNext()
+            return
+        end
+
+        -- 无缓存，需要发起网络请求
+        running = running + 1
 
         UIManager:scheduleIn(0, function()
             local function doRequest(retry)
@@ -535,9 +569,8 @@ function Plugin:doSyncUnderlines()
                 end
 
                 retry = retry or 0
-                local cache = self.database:getUnderlineCache(file, chapter_uid)
                 local ok, data = pcall(self.api.popular_underlines_sync, self.api,
-                    entry.binding.book_id, chapter_uid, cache and cache.synckey or 0)
+                    entry.binding.book_id, chapter_uid, 0)  -- 首次请求 synckey=0
 
                 if not ok then
                     if retry < 3 then
@@ -557,28 +590,25 @@ function Plugin:doSyncUnderlines()
                     end
                 end
 
-                local rows
-                if data.unchanged and cache then
-                    rows = cache.items or {}
-                else
-                    rows = data.items or {}
-                    self.database:saveUnderlineCache(file, chapter_uid,
-                        data.synckey, rows)
-                end
+                local rows = data.items or {}
+                -- 保存缓存
+                self.database:saveUnderlineCache(file, chapter_uid, data.synckey, rows)
 
-                table.sort(rows, function(a, b)
-                    local ac = tonumber(a.count or a.totalCount) or 0
-                    local bc = tonumber(b.count or b.totalCount) or 0
-                    if ac ~= bc then return ac > bc end
-                    local as = tonumber(a.score) or 0
-                    local bs = tonumber(b.score) or 0
-                    if as ~= bs then return as > bs end
-                    return tostring(a.range or "") < tostring(b.range or "")
-                end)
+                if #rows > 0 then
+                    table.sort(rows, function(a, b)
+                        local ac = tonumber(a.count or a.totalCount) or 0
+                        local bc = tonumber(b.count or b.totalCount) or 0
+                        if ac ~= bc then return ac > bc end
+                        local as = tonumber(a.score) or 0
+                        local bs = tonumber(b.score) or 0
+                        if as ~= bs then return as > bs end
+                        return tostring(a.range or "") < tostring(b.range or "")
+                    end)
 
-                local located = Locator.locate(self.ui.document, chapter_uid, rows)
-                for _, record in ipairs(located) do
-                    table.insert(all_located, record)
+                    local located = Locator.locate(self.ui.document, chapter_uid, rows)
+                    for _, record in ipairs(located) do
+                        table.insert(all_located, record)
+                    end
                 end
 
                 running = running - 1

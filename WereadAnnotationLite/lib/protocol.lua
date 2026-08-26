@@ -29,37 +29,6 @@ function Weread.urlencode(value)
     end))
 end
 
-function Weread.sorted_query(params)
-    local keys = {}
-    for key in pairs(params) do
-        if key ~= "s" then
-            table.insert(keys, key)
-        end
-    end
-    table.sort(keys)
-
-    local parts = {}
-    for _, key in ipairs(keys) do
-        table.insert(parts, key .. "=" .. Weread.urlencode(params[key]))
-    end
-    return table.concat(parts, "&")
-end
-
-function Weread.sign(query)
-    local a = 0x15051505
-    local b = a
-    local length = #query
-    local i = length
-
-    while i > 1 do
-        a = bit.band(bit.bxor(a, bit.lshift(query:byte(i), ((length - i + 1) % 30))), 0x7fffffff)
-        b = bit.band(bit.bxor(b, bit.lshift(query:byte(i - 1), ((i - 1) % 30))), 0x7fffffff)
-        i = i - 2
-    end
-
-    return string.format("%x", a + b):lower()
-end
-
 local function byte_hex(value)
     local out = {}
     for i = 1, #value do

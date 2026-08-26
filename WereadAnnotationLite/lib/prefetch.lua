@@ -83,4 +83,19 @@ function Prefetch:start(file, binding, chapter_uid, immediate)
     UIManager:scheduleIn(immediate and 0.1 or 1.0, step)
 end
 
+function Prefetch:scheduleRestore(delay)
+    if not self.plugin.settings:get("prefetch_thoughts", true) then
+        return
+    end
+    delay = tonumber(delay) or 5
+    UIManager:scheduleIn(delay, function()
+        if self.plugin.ui and self.plugin.ui.document and self.plugin.ui.document.file then
+            local entry = self.plugin.database:getDocument(self.plugin.ui.document.file)
+            if entry and entry.binding then
+                self.plugin:prefetchThoughts(false)
+            end
+        end
+    end)
+end
+
 return Prefetch

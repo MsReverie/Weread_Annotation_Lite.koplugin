@@ -29,9 +29,9 @@ function Settings:new()
         debug_log = false,
         prefetch_batch_size = 5,
         prefetch_batch_delay = 0.3,
-        sync_concurrency = 4,    
-        sync_base_interval = 0.2,
-        sync_jitter_max = 0.3,  
+        sync_concurrency = 1,    
+        sync_base_interval = 0,
+        sync_jitter_max = 0.2,  
     }
     return obj
 end
