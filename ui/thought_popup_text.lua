@@ -200,10 +200,6 @@ FaceFactory.VARIANTS = {
 
 function FaceFactory:init()
     if self.initialized then return end
-    -- The cre engine resolves document font file paths.
-    pcall(function()
-        require("document/credocument"):engineInit()
-    end)
     self:findEmojiFont()
     self.initialized = true
 end
@@ -403,7 +399,7 @@ function FaceFactory:_addFallbacks(face, size)
 end
 
 --- Get a variant face (process-wide cache).
---- @param doc_font_name string|nil document font name (nil -> Noto Sans family)
+--- @param doc_font_name string|nil unused for the default popup; nil -> Noto Sans
 --- @param size number DPI-scaled base size (i.e. doc_font_size)
 --- @param variant string key of VARIANTS
 function FaceFactory:getFace(doc_font_name, size, variant)

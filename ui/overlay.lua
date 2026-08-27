@@ -71,6 +71,25 @@ function Overlay:removeRecord(chapter_uid, range)
     end
 end
 
+function Overlay:retainChapterRanges(chapter_uid, keep_ranges)
+    local keep = {}
+    for _, range in ipairs(keep_ranges or {}) do
+        keep[tostring(range)] = true
+    end
+    local records = self.records or {}
+    local changed = false
+    chapter_uid = tostring(chapter_uid)
+    for i = #records, 1, -1 do
+        local rec = records[i]
+        if tostring(rec.chapter_uid) == chapter_uid
+            and not keep[tostring(rec.range)] then
+            table.remove(records, i)
+            changed = true
+        end
+    end
+    if changed then self:invalidate() end
+end
+
 function Overlay:setEnabled(enabled)
     self.enabled = enabled ~= false
     self.visible = {}
@@ -79,7 +98,18 @@ end
 function Overlay:invalidate()
     self.generation = self.generation + 1
     self.cache = {}
+    self._cache_key = nil
     self.visible = {}
+    self._sorted = false
+    for _, rec in ipairs(self.records or {}) do
+        rec._start_pos = nil
+        rec._end_pos = nil
+    end
+end
+
+-- ReaderView:resetLayout() calls this on every view module after a layout pass.
+function Overlay:resetLayout()
+    self:invalidate()
 end
 
 local function draw_boxes(overlay, bb, x, y, boxes)
@@ -90,31 +120,52 @@ local function draw_boxes(overlay, bb, x, y, boxes)
     end
 end
 
+function Overlay:_refreshPositions(document)
+    local records = self.records or {}
+    local need_sort = not self._sorted
+    for _, record in ipairs(records) do
+        if record.pos0 then
+            if record._start_pos == nil then
+                record._start_pos = tonumber((document:getPosFromXPointer(record.pos0))) or math.huge
+                need_sort = true
+            end
+            if record._end_pos == nil and record.pos1 then
+                record._end_pos = tonumber((document:getPosFromXPointer(record.pos1))) or record._start_pos
+            end
+        elseif record._start_pos == nil then
+            record._start_pos = math.huge
+            need_sort = true
+        end
+    end
+    if need_sort then
+        table.sort(records, function(a, b)
+            return (a._start_pos or math.huge) < (b._start_pos or math.huge)
+        end)
+        self._sorted = true
+    end
+end
+
 function Overlay:_computeVisible()
     local document = self.ui and self.ui.document
     local view = self.view
     if not document or not view or self.ui.paging then return {}, 0 end
-    if type(document.getCurrentPos) ~= "function"
-        or type(document.getPosFromXPointer) ~= "function"
-        or type(document.getScreenBoxesFromPositions) ~= "function" then
-        return {}, 0
-    end
-    local top = tonumber(document:getCurrentPos()) or 0
+    local top = tonumber((document:getCurrentPos())) or 0
     local height = self.ui.dimen and tonumber(self.ui.dimen.h) or 0
-    local pages = type(document.getVisiblePageCount) == "function"
-        and tonumber(document:getVisiblePageCount()) or 1
-    local bottom = top + height * math.max(1, pages or 1)
+    local pages = tonumber((document:getVisiblePageCount())) or 1
+    local bottom = top + height * math.max(1, pages)
+    self:_refreshPositions(document)
     local visible, candidates = {}, 0
     for _, record in ipairs(self.records) do
-        if type(record) == "table" and record.pos0 and record.pos1 then
-            local ok_start, start_pos = pcall(document.getPosFromXPointer, document, record.pos0)
-            local ok_end, end_pos = pcall(document.getPosFromXPointer, document, record.pos1)
-            if ok_start and ok_end and tonumber(start_pos) and tonumber(end_pos)
-                and start_pos <= bottom and end_pos >= top then
+        if record.pos0 and record.pos1 then
+            local start_pos = record._start_pos
+            local end_pos = record._end_pos
+            if start_pos and start_pos > bottom then
+                break
+            end
+            if start_pos and end_pos and start_pos <= bottom and end_pos >= top then
                 candidates = candidates + 1
-                local ok_boxes, boxes = pcall(document.getScreenBoxesFromPositions,
-                    document, record.pos0, record.pos1, true)
-                if ok_boxes and type(boxes) == "table" then
+                local boxes = document:getScreenBoxesFromPositions(record.pos0, record.pos1, true)
+                if type(boxes) == "table" then
                     for _, rect in ipairs(boxes) do
                         if type(rect) == "table" and tonumber(rect.h) ~= 0 then
                             visible[#visible + 1] = { rect = rect, record = record }
@@ -137,16 +188,26 @@ function Overlay:paintTo(bb, x, y)
     end
     local document = self.ui and self.ui.document
     if not document then return end
-    local page = type(document.getCurrentPage) == "function" and document:getCurrentPage() or 0
-    local can_cache = self.view and self.view.view_mode == "page"
-    local cache_key = tostring(self.generation) .. ":" .. tostring(page)
-    local cached = can_cache and self.cache[cache_key] or nil
+    local page = document:getCurrentPage() or 0
+    local view_mode = self.view and self.view.view_mode
+    local cache_key
+    if view_mode == "page" then
+        cache_key = tostring(self.generation) .. ":p:" .. tostring(page)
+    else
+        local top = tonumber(document:getCurrentPos()) or 0
+        local height = self.ui.dimen and tonumber(self.ui.dimen.h) or 0
+        local pages = tonumber(document:getVisiblePageCount()) or 1
+        local bottom = top + height * math.max(1, pages)
+        cache_key = tostring(self.generation) .. ":s:" .. tostring(top) .. ":" .. tostring(bottom)
+    end
+    local cached = self._cache_key == cache_key and self.cache[cache_key] or nil
     local boxes, candidates
     if cached then
         boxes, candidates = cached.boxes, cached.candidates
     else
         boxes, candidates = self:_computeVisible()
-        if can_cache then self.cache[cache_key] = { boxes = boxes, candidates = candidates } end
+        self._cache_key = cache_key
+        self.cache = { [cache_key] = { boxes = boxes, candidates = candidates } }
     end
     draw_boxes(self, bb, x, y, boxes)
     self.last_metrics = { candidates = candidates, boxes = #boxes,

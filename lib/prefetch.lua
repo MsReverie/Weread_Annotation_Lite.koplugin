@@ -14,6 +14,29 @@ function Prefetch:new(plugin)
     }, self)
 end
 
+function Prefetch:_holdStandby()
+    if self._standby_held then return end
+    UIManager:preventStandby()
+    self._standby_held = true
+end
+
+function Prefetch:_releaseStandby()
+    if not self._standby_held then return end
+    self._standby_held = false
+    UIManager:allowStandby()
+end
+
+function Prefetch:_openJobDb(file)
+    self.plugin.database:beginSession(file, true)
+    self._db_session = true
+end
+
+function Prefetch:_closeJobDb()
+    if not self._db_session then return end
+    self._db_session = false
+    self.plugin.database:endSession()
+end
+
 function Prefetch:cancel()
     self.gen = self.gen + 1
     self.job = nil
@@ -21,14 +44,18 @@ function Prefetch:cancel()
     self._cooldown_pending = false
     self._paused = false
     self._turn_token = nil
+    self:_releaseStandby()
+    self:_closeJobDb()
 end
 
 function Prefetch:pause()
     self._paused = true
+    self:_releaseStandby()
 end
 
 function Prefetch:resume()
     self._paused = false
+    if self.job then self:_holdStandby() end
 end
 
 function Prefetch:alive(gen)
@@ -44,17 +71,30 @@ end
 
 function Prefetch:ensureCatalog(file, binding)
     local chapters = self.plugin.database:listChapters(file)
-    if #chapters > 0 then return chapters end
-    if not binding or not self.plugin.api:isOnline() then return {} end
-    local ok, catalog = pcall(self.plugin.api.chapters, self.plugin.api, binding.book_id)
-    if not ok or type(catalog) ~= "table" or #catalog == 0 then
-        logger.warn("Prefetch catalog failed:", catalog)
-        return {}
+    local cached_key = self.plugin.database:getChapterSynckey(file)
+    if not binding or not self.plugin.api:isOnline() then
+        return chapters
     end
-    chapters = self.plugin.api.filter_chapters_for_underlines(catalog)
-    self.plugin.database:saveChapters(file, chapters)
-    self.plugin._chapter_list = chapters
-    return chapters
+    local ok, catalog = pcall(self.plugin.api.chapters, self.plugin.api, binding.book_id)
+    if not ok or type(catalog) ~= "table" then
+        logger.warn("Prefetch catalog failed:", catalog)
+        return chapters
+    end
+    local synckey = tonumber(catalog.synckey) or 0
+    if #chapters > 0 and synckey ~= 0 and synckey == cached_key then
+        return chapters
+    end
+    if #chapters > 0 and synckey == 0 then
+        return chapters
+    end
+    local filtered = self.plugin.api.filter_chapters_for_underlines(catalog)
+    if #filtered == 0 then
+        return chapters
+    end
+    self.plugin.database:saveChapters(file, filtered, synckey)
+    self.plugin._chapter_list = filtered
+    self.plugin._toc_map = nil
+    return filtered
 end
 
 function Prefetch:planWindow(file, current_uid, opts)
@@ -128,7 +168,6 @@ function Prefetch:persistLocated(file, located)
     self.plugin.database:saveRecords(file, located)
     if self.plugin._local_annotation_overlay then
         self.plugin._local_annotation_overlay:mergeRecords(located)
-        self.plugin._chapter_starts = nil
     end
 end
 
@@ -142,16 +181,29 @@ function Prefetch:locateChapter(chapter_uid, rows)
     if #rows == 0 then return {} end
     local document = self.plugin.ui and self.plugin.ui.document
     if not document then return {} end
-    local ok, located = pcall(Locator.locate, document, chapter_uid, rows)
+    local file = document.file
+    if file then
+        local skip = self.plugin.database:thoughtlessSet(file)
+        if next(skip) then
+            local kept = {}
+            chapter_uid = tostring(chapter_uid)
+            for _, row in ipairs(rows) do
+                local key = chapter_uid .. "\0" .. tostring(row.range or "")
+                if not skip[key] then
+                    kept[#kept + 1] = row
+                end
+            end
+            rows = kept
+            if #rows == 0 then return {} end
+        end
+    end
+    local bounds = self.plugin:getChapterBounds(chapter_uid)
+    local ok, located = pcall(Locator.locate, document, chapter_uid, rows, bounds)
     if not ok then
         logger.err("Prefetch locate failed:", located)
         return {}
     end
     return located or {}
-end
-
-function Prefetch:reloadOverlay(file)
-    self.plugin._chapter_starts = nil
 end
 
 function Prefetch:onChapter(chapter_uid)
@@ -214,6 +266,9 @@ function Prefetch:request(opts)
         return
     end
     if not plugin.api:isOnline() then
+        if opts.notify and plugin:whenOnline(function() self:request(opts) end) then
+            return
+        end
         if opts.notify then
             plugin:showOffline(_("Sync"))
         end
@@ -248,10 +303,7 @@ function Prefetch:request(opts)
 
     local chapter_uid = opts.chapter_uid
     if not opts.from_start then
-        chapter_uid = chapter_uid or plugin:currentWereadChapterUid({ allow_toc = opts.force or false })
-        if opts.force and not chapter_uid then
-            chapter_uid = plugin:currentWereadChapterUid({ allow_toc = true })
-        end
+        chapter_uid = chapter_uid or plugin:currentWereadChapterUid()
         if not chapter_uid and not opts.force then return end
     end
 
@@ -305,10 +357,22 @@ function Prefetch:request(opts)
     if chapter_uid then
         plugin._seen_chapter_uid = tostring(chapter_uid)
     end
-    self:startUnderlines(file, binding, window, gen)
+    self:_holdStandby()
+    self:startUnderlines(file, binding, window, gen, opts.force)
 end
 
-function Prefetch:startUnderlines(file, binding, window, gen)
+local function item_ranges(items)
+    local ranges = {}
+    for _, item in ipairs(items or {}) do
+        if item.range then
+            ranges[#ranges + 1] = tostring(item.range)
+        end
+    end
+    return ranges
+end
+
+function Prefetch:startUnderlines(file, binding, window, gen, force)
+    self:_openJobDb(file)
     local job = {
         file = file,
         binding = binding,
@@ -316,8 +380,47 @@ function Prefetch:startUnderlines(file, binding, window, gen)
         index = 1,
         located = {},
         fetched_uids = {},
+        prune = {},
     }
     self.job = job
+
+    local function finish_underlines(start_thoughts)
+        for uid, ranges in pairs(job.prune) do
+            self.plugin.database:pruneChapterRanges(file, uid, ranges)
+            if self.plugin._local_annotation_overlay then
+                self.plugin._local_annotation_overlay:retainChapterRanges(uid, ranges)
+            end
+        end
+        self:persistLocated(file, job.located)
+        self.job = nil
+        self:refreshOverlay()
+        if start_thoughts then
+            self:startThoughts(file, binding, job.fetched_uids, gen)
+        else
+            self:_releaseStandby()
+            self:_closeJobDb()
+        end
+    end
+
+    local function fail_underlines(result)
+        logger.err("Underline prefetch failed:", result)
+        local expired = self.plugin.api.is_login_expired(result)
+        local upgrade = self.plugin.api.is_skill_upgrade_required(result)
+        finish_underlines(not expired and not upgrade)
+        if expired then
+            notify(self, _("Weread login has expired."), 3)
+            return
+        end
+        if upgrade then
+            local message = tostring(result or ""):gsub("^upgrade_required%s+", "")
+            notify(self, message, 4)
+            return
+        end
+        notify(self,
+            _("Underline prefetch failed: ") .. tostring(result or "unknown error"),
+            3
+        )
+    end
 
     local function step()
         if not self:alive(gen) or self.job ~= job then return end
@@ -327,54 +430,54 @@ function Prefetch:startUnderlines(file, binding, window, gen)
         end
         local chapter = job.window[job.index]
         if not chapter then
-            self:persistLocated(file, job.located)
-            self.job = nil
-            self:refreshOverlay()
+            finish_underlines(true)
             notify(self, string.format(
                 _("Underline prefetch finished (%d matched)."),
                 #job.located
             ), 2)
-            self:startThoughts(file, binding, job.window, gen)
             return
         end
         local uid = tostring(chapter.chapterUid)
         local cache = self.plugin.database:getUnderlineCache(file, uid)
-        if not cache then
+        local need_fetch = force or not cache
+        if need_fetch then
             if not self.plugin.api:isOnline() then
-                self:persistLocated(file, job.located)
-                self.job = nil
-                self:refreshOverlay()
-                notify(self, _("Underline prefetch failed: offline."), 3)
-                return
-            end
-            local ok, result = pcall(self.plugin.api.popular_underlines_sync, self.plugin.api,
-                binding.book_id, uid, 0)
-            self.last_underline_at = os.time()
-            if not ok or not result then
-                logger.err("Underline prefetch failed:", result)
-                self:persistLocated(file, job.located)
-                self.job = nil
-                self:refreshOverlay()
-                if self.plugin.api.is_login_expired(result) then
-                    notify(self, _("Weread login has expired."), 3)
+                if cache then
+                    need_fetch = false
+                else
+                    finish_underlines(false)
+                    notify(self, _("Underline prefetch failed: offline."), 3)
                     return
                 end
-                notify(self,
-                    _("Underline prefetch failed: ") .. tostring(result or "unknown error"),
-                    3
-                )
-                self:startThoughts(file, binding, job.fetched_uids, gen)
+            end
+        end
+        if need_fetch then
+            local synckey = cache and tonumber(cache.synckey) or 0
+            local ok, result = pcall(self.plugin.api.popular_underlines_sync, self.plugin.api,
+                binding.book_id, uid, synckey)
+            self.last_underline_at = os.time()
+            if not ok or not result then
+                fail_underlines(result)
                 return
             end
-            cache = {
-                synckey = result.synckey,
-                items = result.items or {},
-            }
-            self.plugin.database:saveUnderlineCache(file, uid, cache.synckey, cache.items)
+            if not (result.unchanged and cache) then
+                cache = {
+                    synckey = result.synckey,
+                    items = result.items or {},
+                }
+                self.plugin.database:saveUnderlineCache(file, uid, cache.synckey, cache.items)
+                job.prune[uid] = item_ranges(cache.items)
+            end
         end
-        local located = self:locateChapter(uid, cache.items or {})
-        for _, record in ipairs(located) do
-            job.located[#job.located + 1] = record
+        local skip_locate = not force
+            and cache
+            and not job.prune[uid]
+            and self.plugin.database:hasLocatedChapter(file, uid)
+        if not skip_locate then
+            local located = self:locateChapter(uid, cache and cache.items or {})
+            for _, record in ipairs(located) do
+                job.located[#job.located + 1] = record
+            end
         end
         job.fetched_uids[#job.fetched_uids + 1] = chapter
         job.index = job.index + 1
@@ -386,9 +489,11 @@ end
 function Prefetch:startThoughts(file, binding, chapters, gen)
     chapters = chapters or {}
     if #chapters == 0 or not self.plugin.settings:get("prefetch_thoughts", true) then
+        self:_releaseStandby()
         self:finish(gen)
         return
     end
+    self:_holdStandby()
     local job = {
         file = file,
         binding = binding,
@@ -438,7 +543,6 @@ function Prefetch:startThoughts(file, binding, chapters, gen)
                 UIManager:scheduleIn(0.1, step)
                 return
             end
-            self:reloadOverlay(file)
             self.job = nil
             self:finish(gen)
             return
@@ -451,19 +555,22 @@ function Prefetch:startThoughts(file, binding, chapters, gen)
             for _, review in ipairs(result.reviews) do
                 local range = review.range
                 if range then
-                    found_ranges[range] = true
                     local parsed = self.plugin.api:parseReviewItems(review)
-                    local encoded = self.plugin.json_encode(parsed)
-                    self.plugin.database:saveThoughts(file, job.chapter_uid, range, encoded, true)
-                    if self.plugin._local_annotation_overlay then
-                        self.plugin._local_annotation_overlay:updateThought(
-                            job.chapter_uid, range, parsed)
+                    if self.plugin.api.hasThoughtContent(parsed) then
+                        found_ranges[range] = true
+                        local encoded = self.plugin.api:json_encode(parsed)
+                        self.plugin.database:saveThoughts(file, job.chapter_uid, range, encoded, true)
+                        if self.plugin._local_annotation_overlay then
+                            self.plugin._local_annotation_overlay:updateThought(
+                                job.chapter_uid, range, parsed)
+                        end
                     end
                 end
             end
             for _, range in ipairs(batch) do
                 if not found_ranges[range] then
-                    self.plugin.database:deleteUnderline(file, job.chapter_uid, range)
+                    -- No thoughts: hide the underline and do not fetch this range again.
+                    self.plugin.database:saveThoughts(file, job.chapter_uid, range, "[]", true)
                     if self.plugin._local_annotation_overlay then
                         self.plugin._local_annotation_overlay:removeRecord(
                             job.chapter_uid, range)
@@ -474,6 +581,15 @@ function Prefetch:startThoughts(file, binding, chapters, gen)
             job.index = job.index + 1
             local delay = tonumber(self.plugin.settings:get("prefetch_batch_delay", 0.3)) or 0.3
             UIManager:scheduleIn(delay, step)
+        elseif self.plugin.api.is_login_expired(result)
+            or self.plugin.api.is_skill_upgrade_required(result) then
+            self.job = nil
+            if self.plugin.api.is_login_expired(result) then
+                notify(self, _("Weread login has expired."), 3)
+            else
+                notify(self, tostring(result or ""):gsub("^upgrade_required%s+", ""), 4)
+            end
+            self:finish(gen)
         elseif job.retry < 3 then
             job.retry = job.retry + 1
             UIManager:scheduleIn(0.8 * (2 ^ (job.retry - 1)), step)
@@ -495,6 +611,8 @@ function Prefetch:startThoughts(file, binding, chapters, gen)
 end
 
 function Prefetch:finish(gen)
+    self:_releaseStandby()
+    self:_closeJobDb()
     if not self:alive(gen) then return end
     local followup = false
     -- captured on a previous onChapter while busy

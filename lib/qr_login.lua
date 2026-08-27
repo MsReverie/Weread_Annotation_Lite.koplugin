@@ -320,6 +320,9 @@ function QRLogin:cancel()
 end
 
 function QRLogin:start()
+    if self.host.whenOnline and self.host:whenOnline(function() self:start() end) then
+        return
+    end
     if not self.host:isNetworkOnline() then
         self.host:showOffline(_("QR login"))
         return
@@ -539,10 +542,8 @@ function QRLogin:_complete(login_result, generation)
         end
         logger.info("login completed")
         self.host:showInfo(T(
-            _("Weread login successful.\n\nAccount: %1\nOfficial API key: %3"),
-            account_name,
-            _("configured"),
-            _("configured")
+            _("Weread login successful.\n\nAccount: %1\nOfficial API key: successfully configured"),
+            account_name
         ))
     end)
 end

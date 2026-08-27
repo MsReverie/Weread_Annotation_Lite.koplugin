@@ -6,7 +6,6 @@ local bxor = bit.bxor
 local bnot = bit.bnot
 local lshift = bit.lshift
 local rshift = bit.rshift
-local rol = bit.rol
 local ror = bit.ror
 
 local Crypto = {}
@@ -23,24 +22,9 @@ local function add(...)
     return result
 end
 
-local function le_word(s, i)
-    local b1, b2, b3, b4 = s:byte(i, i + 3)
-    return bor(b1, lshift(b2, 8), lshift(b3, 16), lshift(b4, 24))
-end
-
 local function be_word(s, i)
     local b1, b2, b3, b4 = s:byte(i, i + 3)
     return bor(lshift(b1, 24), lshift(b2, 16), lshift(b3, 8), b4)
-end
-
-local function word_to_le_hex(n)
-    return string.format(
-        "%02x%02x%02x%02x",
-        band(n, 0xff),
-        band(rshift(n, 8), 0xff),
-        band(rshift(n, 16), 0xff),
-        band(rshift(n, 24), 0xff)
-    )
 end
 
 local function word_to_be_hex(n)
@@ -51,76 +35,6 @@ local function word_to_be_hex(n)
         band(rshift(n, 8), 0xff),
         band(n, 0xff)
     )
-end
-
-local md5_s = {
-    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
-    5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
-    4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
-    6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
-}
-
-local md5_k = {}
-for i = 1, 64 do
-    md5_k[i] = math.floor(math.abs(math.sin(i)) * 4294967296)
-end
-
-function Crypto.md5_hex(message)
-    message = tostring(message or "")
-    local bit_len = #message * 8
-    local padding_len = (56 - (#message + 1) % 64) % 64
-    message = message .. string.char(0x80) .. string.rep("\0", padding_len)
-    message = message .. string.char(
-        band(bit_len, 0xff),
-        band(rshift(bit_len, 8), 0xff),
-        band(rshift(bit_len, 16), 0xff),
-        band(rshift(bit_len, 24), 0xff),
-        0, 0, 0, 0
-    )
-
-    local a0 = 0x67452301
-    local b0 = 0xefcdab89
-    local c0 = 0x98badcfe
-    local d0 = 0x10325476
-
-    for chunk = 1, #message, 64 do
-        local m = {}
-        for i = 0, 15 do
-            m[i] = le_word(message, chunk + i * 4)
-        end
-
-        local a, b, c, d = a0, b0, c0, d0
-        for i = 0, 63 do
-            local f, g
-            if i < 16 then
-                f = bor(band(b, c), band(bnot(b), d))
-                g = i
-            elseif i < 32 then
-                f = bor(band(d, b), band(bnot(d), c))
-                g = (5 * i + 1) % 16
-            elseif i < 48 then
-                f = bxor(b, c, d)
-                g = (3 * i + 5) % 16
-            else
-                f = bxor(c, bor(b, bnot(d)))
-                g = (7 * i) % 16
-            end
-            f = add(f, a, md5_k[i + 1], m[g])
-            a, d, c, b = d, c, b, add(b, rol(f, md5_s[i + 1]))
-        end
-
-        a0 = add(a0, a)
-        b0 = add(b0, b)
-        c0 = add(c0, c)
-        d0 = add(d0, d)
-    end
-
-    return table.concat({
-        word_to_le_hex(a0),
-        word_to_le_hex(b0),
-        word_to_le_hex(c0),
-        word_to_le_hex(d0),
-    })
 end
 
 local sha256_k = {

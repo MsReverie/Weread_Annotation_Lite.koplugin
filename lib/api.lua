@@ -3,11 +3,7 @@ local socketutil = require("socketutil")
 local http = require("socket.http")
 local Weread = require("lib.protocol")
 local logger = require("lib.logger")
-
-local ok_json, json = pcall(require, "json")
-if not ok_json then
-    ok_json, json = pcall(require, "rapidjson")
-end
+local json = require("json")
 
 local DEFAULT_TIMEOUT_SECONDS = 15
 local Client = {}
@@ -159,34 +155,14 @@ function Client:isOnline()
     return NetworkMgr:isOnline()
 end
 
-local function normalize_chapters(payload, book_id)
-    if type(payload) ~= "table" then return {} end
-    -- Skills: { chapters = { ... } }
-    if type(payload.chapters) == "table" then
-        return payload.chapters
-    end
-    local records = payload.data or payload
-    if type(records) ~= "table" then return {} end
-    -- 网页: data 可能是对象也可能是数组
-    if records.bookId or records.updated or records.chapterInfos then
-        records = { records }
-    end
-    for _, record in ipairs(records) do
-        if not book_id or tostring(record.bookId or "") == tostring(book_id) then
-            return record.updated or record.chapterInfos or record.chapters or {}
-        end
-    end
-    return {}
-end
-
 function Client:chapters(book_id)
     local result = self:gateway("/book/chapterinfo", {
         bookId = tostring(book_id),
     })
-    local rows = normalize_chapters(result, book_id)
+    local rows = type(result) == "table" and result.chapters or {}
     local chapters = {}
-    for _, row in ipairs(rows or {}) do
-        local uid = row.chapterUid or row.chapterId
+    for _, row in ipairs(rows) do
+        local uid = row.chapterUid
         if uid then
             chapters[#chapters + 1] = {
                 chapterUid = tostring(uid),
@@ -197,6 +173,7 @@ function Client:chapters(book_id)
             }
         end
     end
+    chapters.synckey = tonumber(result and result.synckey) or 0
     return chapters
 end
 
@@ -229,36 +206,67 @@ function Client.filter_chapters_for_underlines(chapters)
     return unique
 end
 
+function Client.format_rating(value)
+    local n = tonumber(value)
+    if not n then return nil end
+    if n > 100 then n = n / 10 end
+    return string.format("%.1f", n)
+end
+
+function Client.formatSearchHit(candidate)
+    if type(candidate) ~= "table" then return nil end
+    local info = candidate.bookInfo or candidate
+    local book_id = info.bookId or candidate.bookId
+    if not book_id then return nil end
+    local author = tostring(info.author or candidate.author or "")
+    local publisher = tostring(info.publisher or candidate.publisher or "")
+    local isbn = tostring(info.isbn or candidate.isbn or "")
+    local rating = Client.format_rating(candidate.newRating or info.newRating)
+    local parts = {}
+    if author ~= "" then parts[#parts + 1] = author end
+    if publisher ~= "" then parts[#parts + 1] = publisher end
+    if rating then parts[#parts + 1] = rating end
+    if isbn ~= "" then parts[#parts + 1] = isbn end
+    return {
+        book_id = tostring(book_id),
+        title = info.title or tostring(book_id),
+        author = author,
+        publisher = publisher,
+        isbn = isbn,
+        subtitle = table.concat(parts, " · "),
+    }
+end
+
 function Client:search(keyword)
-    local result = self:gateway("/store/search", { keyword = keyword, count = 20 })
-    return result.books or result.results and result.results.books or result
+    local result = self:gateway("/store/search", {
+        keyword = keyword,
+        count = 20,
+        scope = Weread.SEARCH_SCOPE_EBOOK,
+    })
+    return result.results or {}
 end
 
 function Client:reviews(book_id, chapter_uid, ranges)
-    local batch = self:build_chapter_review_batches(ranges or {})[1] or {}
+    local batch = {}
+    for _, range in ipairs(ranges or {}) do
+        batch[#batch + 1] = {
+            range = range,
+            maxIdx = 0,
+            count = 20,
+            synckey = 0,
+        }
+    end
     local ok, result, err = self:get_chapter_reviews_batch(book_id, chapter_uid, batch)
     if not ok then error(err or "reviews request failed") end
     return result
 end
 
 function Client:json_encode(data)
-    if not ok_json then
-        error("JSON module is not available")
-    end
-    if json.encode then
-        return json.encode(data)
-    end
-    return json:encode(data)
+    return json.encode(data)
 end
 
 function Client:json_decode(text)
-    if not ok_json then
-        error("JSON module is not available")
-    end
-    if json.decode then
-        return json.decode(text)
-    end
-    return json:decode(text)
+    return json.decode(text)
 end
 
 function Client:decode_http_json(text, context)
@@ -269,6 +277,12 @@ function Client:decode_http_json(text, context)
     end
 
     if type(data) == "table" then
+        if type(data.upgrade_info) == "table" then
+            log_response("API requested a skill upgrade:", context, text)
+            local info = data.upgrade_info
+            local msg = tostring(info.message or info.msg or "Weread Skill needs an update")
+            error("upgrade_required " .. msg, 0)
+        end
         local err_code = data.errCode or data.errcode
         if err_code ~= nil and tonumber(err_code) ~= 0 then
             log_response("API response reported an error:", context, text)
@@ -461,22 +475,10 @@ function Client.is_login_expired(err)
         or text:find("登录超时", 1, true) ~= nil
 end
 
-function Client:build_chapter_review_batches(ranges)
-    local BATCH_SIZE = 5
-    local batches = {}
-    for batch_start = 1, #(ranges or {}), BATCH_SIZE do
-        local batch = {}
-        for index = batch_start, math.min(batch_start + BATCH_SIZE - 1, #ranges) do
-            batch[#batch + 1] = {
-                range = ranges[index],
-                maxIdx = 0,
-                count = 20,
-                synckey = 0,
-            }
-        end
-        batches[#batches + 1] = batch
-    end
-    return batches
+function Client.is_skill_upgrade_required(err)
+    local text = tostring(err or "")
+    return text:find("upgrade_required", 1, true) ~= nil
+        or text:find("upgrade_info", 1, true) ~= nil
 end
 
 function Client:popular_underlines_sync(book_id, chapter_uid, synckey)
@@ -486,12 +488,9 @@ function Client:popular_underlines_sync(book_id, chapter_uid, synckey)
         synckey = tonumber(synckey) or 0,
     })
     if type(result) ~= "table" then error("bestbookmarks: gateway returned non-table") end
-    local items = result.items
-    if type(items) ~= "table" then items = result.underlines end
-    if type(items) ~= "table" then items = result.updated end
-    if type(items) ~= "table" then items = {} end
+    local items = type(result.items) == "table" and result.items or {}
     return {
-        items = items or {},
+        items = items,
         synckey = tonumber(result.synckey) or tonumber(synckey) or 0,
         unchanged = tonumber(synckey) and tonumber(synckey) ~= 0
             and tonumber(result.synckey) == tonumber(synckey),
@@ -554,6 +553,15 @@ function Client:parseReviewItems(review)
         }
     end
     return items
+end
+
+function Client.hasThoughtContent(items)
+    for _, item in ipairs(items or {}) do
+        if type(item.content) == "string" and item.content:find("%S") then
+            return true
+        end
+    end
+    return false
 end
 
 return Client

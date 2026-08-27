@@ -7,8 +7,6 @@ local TOUCH = "wereadannotationlite_tap"
 local function supported(plugin)
     local doc = plugin.ui and plugin.ui.document
     return doc and doc.info and not doc.info.has_pages
-        and type(doc.getXPointer) == "function"
-        and type(doc.getScreenBoxesFromPositions) == "function"
 end
 
 function M.onReaderReady(plugin)
@@ -20,16 +18,14 @@ function M.onReaderReady(plugin)
     }
     plugin.ui.view:registerViewModule(MODULE, overlay)
     plugin._local_annotation_overlay = overlay
-    if plugin.ui.registerTouchZones then
-        plugin.ui:registerTouchZones({{ id = TOUCH, ges = "tap",
-            screen_zone = { ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1 },
-            overrides = { "tap_forward", "tap_backward", "readerfooter_tap" },
-            handler = function(ges)
-                local record = overlay:hitTest(ges and ges.pos)
-                if record then plugin:openThought(record); return true end
-                return false
-            end }})
-    end
+    plugin.ui:registerTouchZones({{ id = TOUCH, ges = "tap",
+        screen_zone = { ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1 },
+        overrides = { "tap_forward", "tap_backward", "readerfooter_tap" },
+        handler = function(ges)
+            local record = overlay:hitTest(ges and ges.pos)
+            if record then plugin:openThought(record); return true end
+            return false
+        end }})
 end
 
 function M.onPageUpdate(plugin)
@@ -37,8 +33,15 @@ function M.onPageUpdate(plugin)
     if overlay then overlay.visible = {} end
 end
 
+function M.onDocumentRerendered(plugin)
+    if plugin._local_annotation_overlay then
+        plugin._local_annotation_overlay:invalidate()
+    end
+    plugin._toc_map = nil
+end
+
 function M.onCloseDocument(plugin)
-    if plugin.ui and plugin.ui.unRegisterTouchZones then
+    if plugin.ui then
         plugin.ui:unRegisterTouchZones({{ id = TOUCH }})
     end
     if plugin.ui and plugin.ui.view and plugin.ui.view.view_modules then

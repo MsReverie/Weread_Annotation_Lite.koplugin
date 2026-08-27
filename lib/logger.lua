@@ -1,25 +1,18 @@
-local ok, base_logger = pcall(require, "logger")
-if not ok then
-    base_logger = nil
-end
+local logger = require("logger")
 
-local LEVELS = {"info", "warn", "err" }
+local LEVELS = { "info", "warn", "err" }
 local debug_enabled = false
 
 local function build(prefix)
     local wrapped = {}
     for _, level in ipairs(LEVELS) do
-        local method = level
-        wrapped[method] = function(...)
-            if base_logger and type(base_logger[method]) == "function" then
-                base_logger[method](prefix, ...)
-            end
+        wrapped[level] = function(...)
+            logger[level](prefix, ...)
         end
     end
-
     wrapped.debug = function(...)
-        if debug_enabled and base_logger and type(base_logger.info) == "function" then
-            base_logger.info(prefix, ...)
+        if debug_enabled then
+            logger.info(prefix, ...)
         end
     end
     return wrapped
@@ -36,7 +29,6 @@ function Logger.isDebug()
 end
 
 function Logger.scoped(scope)
-    assert(type(scope) == "string" and scope ~= "", "logger scope is required")
     return build("[wereadannotationlite][" .. scope .. "]")
 end
 

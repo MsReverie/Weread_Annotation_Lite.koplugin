@@ -12,13 +12,13 @@ local logger = require("lib.logger")
 local Settings = require("settings")
 local Database = require("lib.database")
 local API = require("lib.api")
-local Locator = require("lib.locator")
 local Prefetch = require("lib.prefetch")
 local OverlayController = require("ui.overlay_controller")
+local TocMap = require("lib.toc_map")
 
 local Plugin = WidgetContainer:extend {
     name = "wereadannotationlite",
-    is_doc_only = false,
+    is_doc_only = true,
     version = "0.1.0",
 }
 
@@ -145,6 +145,13 @@ function Plugin:runOnlineTask(_label, callback)
     return true
 end
 
+-- Returns true when the caller should abort: Wi-Fi will come up and callback
+-- will run. Matches NetworkMgr:willRerunWhenOnline.
+function Plugin:whenOnline(callback)
+    local NetworkMgr = require("ui/network/manager")
+    return NetworkMgr:willRerunWhenOnline(callback)
+end
+
 function Plugin:clearCurrentData()
     local file = self.ui.document and self.ui.document.file
     if not file then
@@ -192,140 +199,66 @@ function Plugin:showList(title, items, empty_text)
     UIManager:show(menu)
 end
 
-function Plugin:json_encode(value)
-    local json = require("json")
-    return json.encode(value)
-end
-
-local function normalize_chapter_title(text)
-    text = tostring(text or "")
-    text = text:gsub("%s+", "")
-    text = text:gsub("[%.%-%(%)%[%]《》【】　]", "")
-    return text
-end
-
-function Plugin:matchTocChapterUid(document, file)
-    local chapters = self._chapter_list
-    if not chapters or #chapters == 0 then
-        chapters = self.database:listChapters(file)
-        self._chapter_list = chapters
-    end
-    if not chapters or #chapters == 0 or type(document.getToc) ~= "function" then
-        return nil
-    end
-    local ok_toc, toc = pcall(document.getToc, document)
-    if not ok_toc or type(toc) ~= "table" or #toc == 0 then
-        return nil
-    end
-    local current_pos = 0
-    if document.getCurrentPos then
-        current_pos = document:getCurrentPos() or 0
-    end
-    local best_toc, best_toc_pos = nil, -math.huge
-    for _, item in ipairs(toc) do
-        local pos = tonumber(item.page)
-        local xp = item.xpointer or item.pos
-        if xp and document.getPosFromXPointer then
-            local okp, value = pcall(document.getPosFromXPointer, document, xp)
-            if okp then pos = tonumber(value) or pos end
-        end
-        if pos and pos <= current_pos and pos >= best_toc_pos then
-            best_toc_pos = pos
-            best_toc = item
+local function document_props(plugin)
+    local props = plugin.ui and plugin.ui.doc_props
+    if type(props) ~= "table" then
+        local document = plugin.ui and plugin.ui.document
+        if document then
+            props = document:getProps()
         end
     end
-    if not best_toc then return nil end
-    local want = normalize_chapter_title(best_toc.title)
-    if want == "" then return nil end
-    for _, chapter in ipairs(chapters) do
-        if normalize_chapter_title(chapter.title) == want then
-            return tostring(chapter.chapterUid)
-        end
-    end
-    local hit
-    for _, chapter in ipairs(chapters) do
-        local title = normalize_chapter_title(chapter.title)
-        if title ~= "" and (want:find(title, 1, true) or title:find(want, 1, true)) then
-            if hit then return nil end
-            hit = chapter
-        end
-    end
-    return hit and tostring(hit.chapterUid) or nil
+    return type(props) == "table" and props or {}
 end
 
-function Plugin:tocChapterIsAfter(cached_uid, toc_uid, file)
-    if not cached_uid or not toc_uid or cached_uid == toc_uid then return false end
-    local chapters = self._chapter_list
-    if not chapters or #chapters == 0 then
-        chapters = self.database:listChapters(file)
-        self._chapter_list = chapters
-    end
-    local cached_idx, toc_idx
-    cached_uid = tostring(cached_uid)
-    toc_uid = tostring(toc_uid)
-    for i, chapter in ipairs(chapters or {}) do
-        local uid = tostring(chapter.chapterUid)
-        if uid == cached_uid then cached_idx = i end
-        if uid == toc_uid then toc_idx = i end
-    end
-    return cached_idx and toc_idx and toc_idx > cached_idx
-end
-
-function Plugin:currentWereadChapterUid(opts)
-    opts = opts or {}
+function Plugin:ensureTocMap()
+    if self._toc_map then return self._toc_map end
     local document = self.ui and self.ui.document
     local file = document and document.file
     if not file then return nil end
-
-    if document.getCurrentPos and type(document.getPosFromXPointer) == "function" then
-        local starts = self._chapter_starts
-        if not starts then
-            local records = self._local_annotation_overlay and self._local_annotation_overlay.records
-            starts = {}
-            local seen = {}
-            for _, record in ipairs(records or {}) do
-                local ok, position = pcall(document.getPosFromXPointer, document, record.pos0)
-                position = ok and tonumber(position) or nil
-                if position and record.chapter_uid then
-                    local uid = tostring(record.chapter_uid)
-                    if not seen[uid] or position < seen[uid] then
-                        seen[uid] = position
-                    end
-                end
-            end
-            for uid, position in pairs(seen) do
-                starts[#starts + 1] = { uid = uid, pos = position }
-            end
-            table.sort(starts, function(a, b) return a.pos < b.pos end)
-            self._chapter_starts = starts
-        end
-        if #starts > 0 then
-            local current = document:getCurrentPos() or 0
-            local chapter
-            local later = false
-            for _, item in ipairs(starts) do
-                if item.pos <= current then
-                    chapter = item.uid
-                else
-                    later = true
-                    break
-                end
-            end
-            if chapter and later then
-                return chapter
-            end
-            if chapter and not later then
-                local toc_uid = self:matchTocChapterUid(document, file)
-                if self:tocChapterIsAfter(chapter, toc_uid, file) then
-                    return toc_uid
-                end
-                return chapter
-            end
-        end
+    local chapters = self._chapter_list
+    if not chapters or #chapters == 0 then
+        chapters = self.database:listChapters(file)
+        self._chapter_list = chapters
     end
+    if not chapters or #chapters == 0 then return nil end
+    local toc = document:getToc()
+    if type(toc) ~= "table" or #toc == 0 then return nil end
+    local resolved = {}
+    for i, item in ipairs(toc) do
+        local xp = item.xpointer
+        local pos = tonumber(item.page) or 0
+        if xp then
+            pos = tonumber((document:getPosFromXPointer(xp))) or pos
+        end
+        resolved[i] = {
+            title = item.title,
+            xpointer = xp,
+            pos = pos,
+        }
+    end
+    local matched = TocMap.match(chapters, resolved)
+    self._toc_map = {
+        chapters = chapters,
+        toc = resolved,
+        matched = matched,
+        bounds = TocMap.bounds(chapters, resolved, matched),
+    }
+    return self._toc_map
+end
 
-    if not opts.allow_toc then return nil end
-    return self:matchTocChapterUid(document, file)
+function Plugin:getChapterBounds(chapter_uid)
+    if not chapter_uid then return nil end
+    local map = self:ensureTocMap()
+    if not map then return nil end
+    return map.bounds[tostring(chapter_uid)]
+end
+
+function Plugin:currentWereadChapterUid()
+    local document = self.ui and self.ui.document
+    if not document or not document.file then return nil end
+    local map = self:ensureTocMap()
+    if not map then return nil end
+    return TocMap.uidAtPos(map.bounds, document:getCurrentPos() or 0)
 end
 
 function Plugin:onChapterMaybeChanged()
@@ -358,7 +291,7 @@ function Plugin:prefetchThoughts(silent)
     end
 
     self.prefetch:ensureCatalog(file, binding)
-    local chapter = self:currentWereadChapterUid({ allow_toc = true })
+    local chapter = self:currentWereadChapterUid()
     if not chapter then
         if not silent then
             self:showTransientInfo(_("Could not detect the current chapter."))
@@ -389,7 +322,21 @@ function Plugin:openThought(record)
     local items = type(record.items) == "table" and record.items or {}
     local chapter_uid = record.chapter_uid
     local loading
+    if tonumber(record.fetched) == 1 and not self.api.hasThoughtContent(items) then
+        self.database:saveThoughts(file, chapter_uid, record.range, "[]", true)
+        if self._local_annotation_overlay then
+            self._local_annotation_overlay:removeRecord(chapter_uid, record.range)
+        end
+        self._thought_open = false
+        self.prefetch:resume()
+        return true
+    end
     if #items == 0 then
+        if self:whenOnline(function() self:openThought(record) end) then
+            self._thought_open = false
+            self.prefetch:resume()
+            return true
+        end
         local InfoMessage = require("ui/widget/infomessage")
         loading = InfoMessage:new { text = _("Loading thoughts…") }
         UIManager:show(loading)
@@ -402,30 +349,42 @@ function Plugin:openThought(record)
                     items[#items + 1] = item
                 end
             end
-            self.database:saveThoughts(file, record.chapter_uid, record.range,
-                self:json_encode(items), true)
-            if self._local_annotation_overlay then
-                self._local_annotation_overlay:updateThought(record.chapter_uid, record.range, items)
+            if self.api.hasThoughtContent(items) then
+                self.database:saveThoughts(file, record.chapter_uid, record.range,
+                    self.api:json_encode(items), true)
+                if self._local_annotation_overlay then
+                    self._local_annotation_overlay:updateThought(record.chapter_uid, record.range, items)
+                end
+            else
+                items = {}
             end
         elseif not ok then
             UIManager:close(loading)
             self._thought_open = false
             self.prefetch:resume()
-            self:showInfo(tostring(result))
+            local message = tostring(result)
+            if self.api.is_skill_upgrade_required(result) then
+                message = message:gsub("^upgrade_required%s+", "")
+            end
+            self:showInfo(message)
             return true
         end
         UIManager:close(loading)
     end
     if #items == 0 then
+        self.database:saveThoughts(file, record.chapter_uid, record.range, "[]", true)
+        if self._local_annotation_overlay then
+            self._local_annotation_overlay:removeRecord(record.chapter_uid, record.range)
+        end
         self._thought_open = false
         self.prefetch:resume()
-        self:showTransientInfo(_("No thoughts were returned for this underline."), 3)
         return true
     end
     require("ui.thought_popup").show {
         pages = items,
         position = "bottom",
         height_ratio = 0.75,
+        -- Intentionally no doc_font_name: use the popup's Noto Sans default.
         doc_font_size = require("device").screen:scaleBySize(22),
         close_callback = function()
             self._thought_open = false
@@ -435,23 +394,125 @@ function Plugin:openThought(record)
     return true
 end
 
+local function strip_search_noise(text)
+    text = tostring(text or "")
+        :gsub("%s*（.-）", "")
+        :gsub("%s*%(.-%)", "")
+        :gsub("^%s+", "")
+        :gsub("%s+$", "")
+    return text
+end
+
+local function normalize_isbn(text)
+    return tostring(text or ""):upper():gsub("[^0-9X]", "")
+end
+
+local function document_isbn(plugin)
+    local props = document_props(plugin)
+    local raw = props.isbn or props.identifiers
+    if type(raw) == "table" then
+        raw = table.concat(raw, " ")
+    end
+    raw = normalize_isbn(raw)
+    return raw:match("97[89]%d%d%d%d%d%d%d%d%d%d")
+        or raw:match("%d%d%d%d%d%d%d%d%d[0-9X]")
+end
+
+local function document_search_keyword(plugin, file)
+    local props = document_props(plugin)
+    local title = strip_search_noise(props.display_title or props.title)
+    if title ~= "" then
+        return title, props.authors or props.author
+    end
+    local raw_name = tostring(file or ""):match("([^/\\]+)%.[^%.]+$") or ""
+    return strip_search_noise(raw_name), props.authors or props.author
+end
+
+function Plugin:showWereadSearchResults(file, keyword, callback)
+    if self:whenOnline(function()
+        self:showWereadSearchResults(file, keyword, callback)
+    end) then
+        return
+    end
+
+    local rows = {}
+    local seen = {}
+    local function append_hits(groups)
+        for _g, group in ipairs(groups or {}) do
+            for _c, candidate in ipairs(group.books or {}) do
+                local hit = self.api.formatSearchHit(candidate)
+                if hit and not seen[hit.book_id] then
+                    seen[hit.book_id] = true
+                    rows[#rows + 1] = {
+                        text = hit.title,
+                        post_text = hit.subtitle,
+                        callback = function()
+                            self.database:saveBinding(file, {
+                                book_id = hit.book_id,
+                                title = hit.title,
+                                author = hit.author,
+                            })
+                            self:showTransientInfo(_("Book matched."), 2)
+                            if callback then callback(true) end
+                        end
+                    }
+                end
+            end
+        end
+    end
+
+    local isbn = document_isbn(self)
+    if isbn then
+        local ok_isbn, isbn_result = pcall(self.api.search, self.api, isbn)
+        if ok_isbn then
+            append_hits(isbn_result)
+        end
+    end
+
+    if keyword ~= isbn then
+        local ok, result = pcall(self.api.search, self.api, keyword)
+        if not ok then
+            if #rows == 0 then
+                local message = tostring(result or "")
+                if message:find("API key is not configured", 1, true) then
+                    self:showInfo(_(
+                        "Please use Weread QR login first. The QR login obtains the official API key automatically."))
+                else
+                    self:showInfo(message)
+                end
+                if callback then callback(false) end
+                return
+            end
+        else
+            append_hits(result)
+        end
+    end
+
+    if #rows == 0 then
+        self:showInfo(_("No results."))
+        if callback then callback(false) end
+        return
+    end
+    self:showList(_("Select matching book"), rows, _("No results."))
+end
+
 function Plugin:matchBookAndThen(callback)
     local file = self.ui.document and self.ui.document.file
     if not file then
         if callback then callback(false) end
         return
     end
-    local raw_name = file:match("([^/]+)%.[^%.]+$") or ""
-    local cleaned_name = raw_name
-        :gsub("%s*（.-）", "")
-        :gsub("%s*%(.-%)", "")
-        :gsub("^%s+", "")
-        :gsub("%s+$", "")
+    local cleaned_name, doc_author = document_search_keyword(self, file)
+    local description
+    if doc_author and tostring(doc_author) ~= "" then
+        description = _("Author") .. ": " .. tostring(doc_author)
+    end
     local InputDialog = require("ui/widget/inputdialog")
     local dialog
     dialog = InputDialog:new {
         title = _("Search Weread book"),
         input = cleaned_name,
+        description = description,
         buttons = { {
             {
                 text = _("Cancel"),
@@ -466,55 +527,7 @@ function Plugin:matchBookAndThen(callback)
                 callback = function()
                     local keyword = dialog:getInputText()
                     UIManager:close(dialog)
-                    local ok, result = pcall(self.api.search, self.api, keyword)
-                    if not ok then
-                        local message = tostring(result or "")
-                        if message:find("API key is not configured", 1, true) then
-                            self:showInfo(_(
-                                "Please use Weread QR login first. The QR login obtains the official API key automatically."))
-                        else
-                            self:showInfo(message)
-                        end
-                        if callback then callback(false) end
-                        return
-                    end
-
-                    local rows = {}
-                    local source = result
-                    if type(source) == "table" and type(source.results) == "table" then
-                        source = source.results
-                    end
-                    if type(source) == "table" and type(source.books) == "table" then
-                        source = source.books
-                    end
-                    for _row_index, row in ipairs(source or {}) do
-                        local candidates = type(row) == "table" and row.books or nil
-                        if type(candidates) ~= "table" then candidates = { row } end
-                        for _candidate_index, candidate in ipairs(candidates) do
-                            local info = candidate.bookInfo or candidate
-                            if info.bookId then
-                                rows[#rows + 1] = {
-                                    text = info.title or info.bookId,
-                                    post_text = info.author or "",
-                                    callback = function()
-                                        self.database:saveBinding(file, {
-                                            book_id = tostring(info.bookId),
-                                            title = info.title,
-                                            author = info.author,
-                                        })
-                                        self:showTransientInfo(_("Book matched."), 2)
-                                        if callback then callback(true) end
-                                    end
-                                }
-                            end
-                        end
-                    end
-                    if #rows == 0 then
-                        self:showInfo(_("No results."))
-                        if callback then callback(false) end
-                        return
-                    end
-                    self:showList(_("Select matching book"), rows, _("No results."))
+                    self:showWereadSearchResults(file, keyword, callback)
                 end
             }
         } },
@@ -549,8 +562,6 @@ function Plugin:syncUnderlines()
                     respect_cooldown = false,
                     notify = true,
                 })
-            else
-                self:showInfo(_("Sync cancelled."))
             end
         end)
     end
@@ -559,7 +570,7 @@ end
 function Plugin:onReaderReady()
     self._reader_session = self._reader_session + 1
     self._seen_chapter_uid = nil
-    self._chapter_starts = nil
+    self._toc_map = nil
     self._thought_open = false
     OverlayController.onReaderReady(self)
     if self.settings:get("prefetch_thoughts", true) then
@@ -580,11 +591,19 @@ function Plugin:onPageUpdate()
     self:onChapterMaybeChanged()
 end
 
+function Plugin:onDocumentRerendered()
+    OverlayController.onDocumentRerendered(self)
+end
+
+function Plugin:onDocumentPartiallyRerendered()
+    OverlayController.onDocumentRerendered(self)
+end
+
 function Plugin:onCloseDocument()
     self._reader_session = self._reader_session + 1
     self._seen_chapter_uid = nil
     self._chapter_list = nil
-    self._chapter_starts = nil
+    self._toc_map = nil
     self._thought_open = false
     self.prefetch:cancel()
     OverlayController.onCloseDocument(self)
