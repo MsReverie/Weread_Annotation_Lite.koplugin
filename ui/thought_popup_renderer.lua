@@ -1,17 +1,13 @@
 --[[--
-Thought popup pagination and validation core (pure logic, unit-testable).
+Thought popup pagination core.
 
 * paginateText     xtext measure + makeLine; returns reusable XText/lines.
-* paginateLines    compatibility wrapper: line count only (frees temp XText).
 * textPieceMetrics line height / glyph overhang / baseline.
 * renderTextPiece  rasterize a piece from cached XText (shapeLine + glyph blit).
 * freeTextPieces   release XText attached to pieces (layout cache eviction).
 * computePages     boundary table -> page starts (no line splits + orphan control).
 * buildPagePieceIndex  page -> piece inverted index (util.bsearch_*, O(P log N)).
 * pieceVisibleRange visible line slice inside page [p0, p1).
-
-xtext / blitbuffer / rendertext are lazy-required; tests can inject mocks via
-package.preload.
 --]]
 
 local util = require("util")
@@ -277,21 +273,12 @@ end
 
 
 --[[--
-Thought popup pagination and page rendering (shared by both popup positions).
+Thought popup page rendering.
 
-The bottom bitmap popup renders review content through this pipeline:
-
-  * one-shot pagination of the review blocks (ContentBuilder + Paginator),
-    cached in a koreader Cache keyed by (items, font, margins, height_ratio);
-  * per-piece glyph bitmaps (piece cache);
-  * lazy page bitmaps (page cache), where a page is a y-slice of the flowing
-    content, so a single long thought may span several pages.
-
-Widgets ask for page starts with computePages(viewport_h) and render page
-bitmaps on demand with renderPage(page_idx, page_starts). The page -> piece
-inverted index is rebuilt whenever the page_starts table changes (i.e. when
-the viewport height changes), while layout and piece caches are freed only
-when the content or geometry key changes.
+Review blocks are paginated once (ContentBuilder + Paginator) and cached by
+(items, font, margins, content_width). Piece and page bitmaps are rendered
+lazily. computePages(viewport_h) yields page starts; renderPage draws a y-slice.
+The page -> piece index is rebuilt when page starts change.
 --]]
 
 local Cache = require("cache")
@@ -341,37 +328,35 @@ local function itemsKey(items)
     return table.concat(parts, "\n")
 end
 
-local function geomKey(doc_font_name, doc_font_size, margins, height_ratio)
+local function geomKey(doc_font_size, margins, content_width)
     local m = margins or {}
-    return string.format("%s|%d|%d_%d_%d_%d|%.4f",
-        doc_font_name or "", doc_font_size or 0,
-        m.left or 0, m.right or 0, m.top or 0, m.bottom or 0,
-        height_ratio or 0.35)
+    return string.format("%d|%d_%d|%d",
+        doc_font_size or 0,
+        m.left or 0, m.right or 0,
+        content_width or 0)
 end
 
 local PageRenderer = {}
 
---- @param opts table { items, doc_font_name, doc_font_size, doc_margins,
----                    height_ratio }
+--- @param opts table { items, doc_font_size, doc_margins, content_width }
 function PageRenderer:new(opts)
     opts = opts or {}
     local self_obj = setmetatable({}, { __index = PageRenderer })
     self_obj.items = opts.items or {}
-    self_obj.doc_font_name = opts.doc_font_name
-    self_obj.doc_font_size = opts.doc_font_size or Screen:scaleBySize(18)
+    self_obj.doc_font_size = opts.doc_font_size or Screen:scaleBySize(22)
     self_obj.doc_margins = opts.doc_margins or {
-        left = Screen:scaleBySize(20),
-        right = Screen:scaleBySize(20),
+        left = Screen:scaleBySize(10),
+        right = Screen:scaleBySize(10),
         top = Screen:scaleBySize(10),
         bottom = Screen:scaleBySize(10),
     }
-    self_obj.height_ratio = opts.height_ratio or 0.35
+    self_obj.content_width = opts.content_width
     self_obj._layout_cache = newLayoutCache()
     self_obj._page_bbs = newPageCache()
     self_obj._piece_cache = newPieceCache()
     self_obj._items_key = itemsKey(self_obj.items)
-    self_obj._geom_key = geomKey(self_obj.doc_font_name, self_obj.doc_font_size,
-        self_obj.doc_margins, self_obj.height_ratio)
+    self_obj._geom_key = geomKey(self_obj.doc_font_size,
+        self_obj.doc_margins, self_obj.content_width)
     self_obj._bb_key = self_obj._items_key .. "|" .. self_obj._geom_key
     self_obj._page_pieces = {}
     self_obj._page_pieces_key = nil
@@ -384,19 +369,15 @@ function PageRenderer:new(opts)
 end
 
 --- Reload content/geometry; re-layout only when the cache key changed.
---- content_width (optional) is the full inner column width before margins;
---- the centered popup passes its frame width so a width change re-paginates.
---- contrast (optional) shifts every block's gray level; a change re-lays out
---- because the colors are baked into the pieces.
-function PageRenderer:setContent(items, doc_font_name, doc_font_size, doc_margins, height_ratio)
+--- content_width (optional) is the full inner column width before margins.
+function PageRenderer:setContent(items, doc_font_size, doc_margins, content_width)
     self.items = items or {}
-    if doc_font_name ~= nil then self.doc_font_name = doc_font_name end
     if doc_font_size ~= nil then self.doc_font_size = doc_font_size end
     if doc_margins ~= nil then self.doc_margins = doc_margins end
-    if height_ratio ~= nil then self.height_ratio = height_ratio end
+    if content_width ~= nil then self.content_width = content_width end
     local new_items_key = itemsKey(self.items)
-    local new_geom_key = geomKey(self.doc_font_name, self.doc_font_size,
-        self.doc_margins, self.height_ratio)
+    local new_geom_key = geomKey(self.doc_font_size,
+        self.doc_margins, self.content_width)
     local new_bb_key = new_items_key .. "|" .. new_geom_key
     if new_bb_key ~= self._bb_key then
         self._items_key = new_items_key
@@ -412,9 +393,9 @@ function PageRenderer:paginate()
     local blocks = ContentBuilder.build(self.items)
     local t1 = os.clock()
 
-    local item_width = math.min(math.ceil(self.doc_margins.right * 2 / 5), Screen:scaleBySize(10))
-    local inner_w = Screen:getWidth()
-    local text_w = inner_w - self.doc_margins.left - self.doc_margins.right - item_width
+    local scrollbar_w = math.min(math.ceil(Screen:scaleBySize(20) * 2 / 5), Screen:scaleBySize(10))
+    local inner_w = self.content_width or Screen:getWidth()
+    local text_w = inner_w - self.doc_margins.left - self.doc_margins.right - scrollbar_w
     if text_w < 10 then text_w = 10 end
     local base_size = math.max(8, math.floor(self.doc_font_size or 0))
 
@@ -423,7 +404,7 @@ function PageRenderer:paginate()
     local y = 0
 
     local function addTextPiece(variant, text, fg, width, x, keep_next)
-        local face = FaceFactory:getFace(self.doc_font_name, base_size, variant)
+        local face = FaceFactory:getFace(base_size, variant)
         if not face then return false end
         local line_h, baseline = Paginator.textPieceMetrics(face)
         local paginated = Paginator.paginateText(text, face, width)
@@ -464,10 +445,9 @@ function PageRenderer:paginate()
     for _, block in ipairs(blocks) do
         if block.kind == "paragraph" then
             if block.variant == "quote" then
-                local quote_face = FaceFactory:getFace(self.doc_font_name, base_size, "quote")
+                local quote_face = FaceFactory:getFace(base_size, "quote")
                 local line_h, baseline = Paginator.textPieceMetrics(quote_face)
                 local spacing = math.floor(line_h * 0.5)
-                addSpacing(spacing)
                 addTextPiece(block.variant, block.text, block.fg, text_w, 0,
                     block.variant == "meta")
                 addSpacing(spacing)

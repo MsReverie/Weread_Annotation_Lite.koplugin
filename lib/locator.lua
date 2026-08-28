@@ -1,8 +1,9 @@
 local Locator = {}
 
--- findAllText is whole-document. findText from the chapter origin avoids
--- earlier-book hits filling the cap before this chapter is reached.
-local MAX_SEARCH_HITS = 512
+-- findText searches a short window around the document's current Y origin.
+-- Callers pass a chapter (or previous-hit) xpointer, then restore the reader's
+-- xpointer so the view is not left at the search origin.
+local MAX_SEARCH_HITS = 64
 local FALLBACK_QUOTE_BYTES = 90
 local SEARCH_FLAGS = 0x00FF
 
@@ -56,34 +57,14 @@ function Locator.normalize_hits(results)
     return out
 end
 
-local function search_all(document, text)
-    local ok, results = pcall(document.findAllText, document, text, true, 0,
-        MAX_SEARCH_HITS, false, SEARCH_FLAGS)
-    return ok and Locator.normalize_hits(results) or {}
-end
-
-local function search_from_here(document, text)
-    -- origin 0 = from current position, direction 0 = forward
+function Locator.search(document, text)
+    if not document or text == nil or text == "" then return {} end
     local ok, results = pcall(document.findText, document, text, 0, 0, true,
         0, false, MAX_SEARCH_HITS, SEARCH_FLAGS)
-    if ok then
-        local hits = Locator.normalize_hits(results)
-        if #hits > 0 then return hits end
+    if document.clearSelection then
+        pcall(document.clearSelection, document)
     end
-    return search_all(document, text)
-end
-
-function Locator.withOrigin(document, xpointer, fn)
-    if not document or type(xpointer) ~= "string" or xpointer == "" then
-        return fn(false)
-    end
-    local ok_save, saved = pcall(document.getXPointer, document)
-    if not ok_save then saved = nil end
-    local ok_goto = pcall(document.gotoXPointer, document, xpointer)
-    local ok, result = pcall(fn, ok_goto == true)
-    if saved then pcall(document.gotoXPointer, document, saved) end
-    if not ok then error(result, 0) end
-    return result
+    return ok and Locator.normalize_hits(results) or {}
 end
 
 local function position(document, result)
@@ -91,7 +72,7 @@ local function position(document, result)
         return nil
     end
     local ok, value = pcall(document.getPosFromXPointer, document, result.start)
-    return ok and tonumber(value) or nil
+    return ok and tonumber((value)) or nil
 end
 
 function Locator.choose_after(document, results, minimum, bounds)
@@ -112,51 +93,59 @@ function Locator.choose_after(document, results, minimum, bounds)
     return selected, selected_position
 end
 
-function Locator.locate(document, chapter_uid, underlines, bounds)
+function Locator.sortedRows(underlines)
     local rows = {}
     for _, row in ipairs(underlines or {}) do
         rows[#rows + 1] = row
     end
     table.sort(rows, function(a, b) return range_start(a) < range_start(b) end)
+    return rows
+end
 
-    local function run(search_fn)
-        local records = {}
-        local cursor = -math.huge
-        for _, row in ipairs(rows) do
-            local text = quote(row)
-            if text ~= "" then
-                local results = search_fn(text)
-                local result, result_position = Locator.choose_after(document, results, cursor, bounds)
-                if not result and #text > FALLBACK_QUOTE_BYTES then
-                    results = search_fn(utf8_prefix(text, FALLBACK_QUOTE_BYTES))
-                    result, result_position = Locator.choose_after(document, results, cursor, bounds)
-                end
-                if result then
-                    cursor = result_position
-                    records[#records + 1] = {
-                        chapter_uid = tostring(chapter_uid),
-                        range = tostring(row.range or ""),
-                        text = text,
-                        pos0 = result.start,
-                        pos1 = result["end"],
-                        items = {},
-                    }
-                end
-            end
+--- Locate one underline. Temporarily moves CRE to `from_xp` (chapter start or
+--- the previous hit) for findText, then restores the reader's xpointer.
+--- @return record|nil, cursor_pos, next_from_xp
+function Locator.locateOne(document, chapter_uid, row, cursor, bounds, from_xp)
+    if not document or not row then
+        return nil, cursor, from_xp
+    end
+    local text = quote(row)
+    if text == "" then
+        return nil, cursor, from_xp
+    end
+
+    local target_xp = from_xp or (bounds and bounds.start_xp)
+    local saved
+    if target_xp then
+        local ok_save, xp = pcall(document.getXPointer, document)
+        if ok_save then saved = xp end
+        local ok_goto = pcall(document.gotoXPointer, document, target_xp)
+        if not ok_goto then
+            if saved then pcall(document.gotoXPointer, document, saved) end
+            return nil, cursor, from_xp
         end
-        return records
     end
 
-    local start_xp = type(bounds) == "table" and bounds.start_xp or nil
-    if start_xp then
-        return Locator.withOrigin(document, start_xp, function(moved)
-            if moved then
-                return run(function(text) return search_from_here(document, text) end)
-            end
-            return run(function(text) return search_all(document, text) end)
-        end)
+    local results = Locator.search(document, text)
+    if #results == 0 and #text > FALLBACK_QUOTE_BYTES then
+        results = Locator.search(document, utf8_prefix(text, FALLBACK_QUOTE_BYTES))
     end
-    return run(function(text) return search_all(document, text) end)
+    if saved then
+        pcall(document.gotoXPointer, document, saved)
+    end
+
+    local result, result_position = Locator.choose_after(document, results, cursor, bounds)
+    if not result then
+        return nil, cursor, from_xp
+    end
+    return {
+        chapter_uid = tostring(chapter_uid),
+        range = tostring(row.range or ""),
+        text = text,
+        pos0 = result.start,
+        pos1 = result["end"],
+        items = {},
+    }, result_position, result.start
 end
 
 return Locator

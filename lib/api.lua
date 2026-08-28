@@ -256,8 +256,24 @@ function Client:reviews(book_id, chapter_uid, ranges)
             synckey = 0,
         }
     end
-    local ok, result, err = self:get_chapter_reviews_batch(book_id, chapter_uid, batch)
-    if not ok then error(err or "reviews request failed") end
+    if not book_id or tostring(book_id) == "" then
+        error("empty book_id")
+    end
+    if not chapter_uid then
+        error("empty chapter_uid")
+    end
+    if #batch == 0 then
+        return { reviews = {} }
+    end
+    chapter_uid = tonumber(chapter_uid) or chapter_uid
+    local result = self:gateway("/book/readreviews", {
+        bookId = tostring(book_id),
+        chapterUid = chapter_uid,
+        reviews = batch,
+    })
+    if type(result) ~= "table" or type(result.reviews) ~= "table" then
+        error("readreviews: gateway returned invalid data")
+    end
     return result
 end
 
@@ -497,38 +513,6 @@ function Client:popular_underlines_sync(book_id, chapter_uid, synckey)
     }
 end
 
-function Client:get_chapter_reviews_batch(book_id, chapter_uid, batch, opts)
-    opts = opts or {}
-    if not book_id or tostring(book_id) == "" then
-        return false, nil, "empty book_id"
-    end
-    if not chapter_uid then
-        return false, nil, "empty chapter_uid"
-    end
-    if type(batch) ~= "table" or #batch == 0 then
-        return true, { reviews = {} }
-    end
-    chapter_uid = tonumber(chapter_uid) or chapter_uid
-
-    local ok, result = pcall(function()
-        return self:gateway("/book/readreviews", {
-            bookId = tostring(book_id),
-            chapterUid = chapter_uid,
-            reviews = batch,
-        }, {
-            -- Interactive/prefetch callers pass a short timeout; bulk download keeps the default.
-            timeout = opts.timeout,
-        })
-    end)
-    if not ok then
-        return false, nil, tostring(result)
-    end
-    if type(result) ~= "table" or type(result.reviews) ~= "table" then
-        return false, nil, "readreviews: gateway returned invalid data"
-    end
-    return true, result
-end
-
 function Client:parseReviewItems(review)
     local items = {}
     local pages = review.pageReviews
@@ -563,5 +547,8 @@ function Client.hasThoughtContent(items)
     end
     return false
 end
+
+Client.header_value = header_value
+Client.deepcopy = deepcopy
 
 return Client

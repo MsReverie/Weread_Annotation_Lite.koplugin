@@ -1,62 +1,52 @@
 --[[--
-Thought popup widget (bottom position).
+Thought popup widget (centered rounded frame).
 
-Renders review items by shaping each text block with the document font (or a
-fallback chain) and paginating once; pages are blitted into a bitmap viewport
-that scrolls. Long content scrolls directly, with no button navigation.
-
-Pagination, layout, page and piece caches live in the local thought_popup
-helpers. This module composes the renderer into the bottom bar:
-a solid top border, a scrollable page viewport (scroll_container.lua), and
-bottom/tap/Back gestures.
+Renders review items with XText into a bitmap viewport that scrolls.
+Tap inside the frame turns pages; tap outside closes it. No dim overlay.
 --]]
 
+local BD = require("ui/bidi")
 local Blitbuffer = require("ffi/blitbuffer")
-local BottomContainer = require("ui/widget/container/bottomcontainer")
+local CenterContainer = require("ui/widget/container/centercontainer")
 local Device = require("device")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
 local InputContainer = require("ui/widget/container/inputcontainer")
-local LineWidget = require("ui/widget/linewidget")
 local PageRenderer = require("ui.thought_popup_renderer")
 local ScrollContainer = require("ui.thought_popup_scroll")
 local Size = require("ui/size")
-local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
-local VerticalSpan = require("ui/widget/verticalspan")
 local Screen = Device.screen
-local _ = require("gettext")
 
-local TOP_BORDER_SIZE = Size.line.thick
-local PADDING_TOP = Size.padding.large
-local PADDING_BOTTOM = Size.padding.large
+local OUTER_MARGIN = Screen:scaleBySize(24)
+local FRAME_PAD_V = Size.padding.large
+local FRAME_PAD_H = Size.padding.small
+local FRAME_BORDER = Size.border.window or Size.line.medium
+local SCROLLBAR_W = math.min(math.ceil(Screen:scaleBySize(20) * 2 / 5), Screen:scaleBySize(10))
 
 local ThoughtPopupWidget = InputContainer:extend{
     items = nil,
-    doc_font_name = nil,
     doc_font_size = Screen:scaleBySize(22),
     doc_margins = {
-        left = Screen:scaleBySize(20),
-        right = Screen:scaleBySize(20),
+        left = Screen:scaleBySize(10),
+        right = Screen:scaleBySize(10),
         top = Screen:scaleBySize(10),
         bottom = Screen:scaleBySize(10),
     },
-    height_ratio = 0.75,
+    height_ratio = 0.74,
     close_callback = nil,
-    dialog = nil,
 
     _pages = nil,
     _scroll_container = nil,
-
-    covers_footer = true,
 }
 
 function ThoughtPopupWidget:init()
-    self.height_ratio = math.max(0.1, math.min(0.9, self.height_ratio or 0.55))
-    self.width = Screen:getWidth()
-    self.height = math.floor(Screen:getHeight() * self.height_ratio)
+    self.width = math.max(1, Screen:getWidth() - 2 * OUTER_MARGIN)
+    self.height = math.min(
+        math.floor(Screen:getHeight() * self.height_ratio),
+        math.max(1, Screen:getHeight() - 2 * OUTER_MARGIN))
 
     if Device:isTouchDevice() then
         local range = Geom:new{
@@ -65,7 +55,7 @@ function ThoughtPopupWidget:init()
             h = Screen:getHeight(),
         }
         self.ges_events = {
-            TapClose = {
+            Tap = {
                 GestureRange:new{
                     ges = "tap",
                     range = range,
@@ -109,46 +99,46 @@ function ThoughtPopupWidget:init()
 
     self._pages = PageRenderer:new{
         items = self.items,
-        doc_font_name = self.doc_font_name,
         doc_font_size = self.doc_font_size,
         doc_margins = self.doc_margins,
-        height_ratio = self.height_ratio,
+        content_width = self:_innerWidth(),
     }
     self._pages:ensureLayout()
     self:_buildLayout()
 end
 
+function ThoughtPopupWidget:_innerWidth()
+    return math.max(1, self.width - 2 * FRAME_PAD_H - 2 * FRAME_BORDER)
+end
+
 function ThoughtPopupWidget:onShow()
-    UIManager:setDirty(self.dialog, function()
+    UIManager:setDirty(self, function()
         return "partial", self.container.dimen
     end)
 end
 
 function ThoughtPopupWidget:_reopen(opts)
     self.items = opts.items or {}
-    if opts.doc_font_name then self.doc_font_name = opts.doc_font_name end
-    if opts.doc_font_size then self.doc_font_size = opts.doc_font_size end
-    if opts.doc_margins then self.doc_margins = opts.doc_margins end
-    if opts.height_ratio then self.height_ratio = opts.height_ratio end
-    if opts.dialog then self.dialog = opts.dialog end
     self.close_callback = opts.close_callback
-    self.height_ratio = math.max(0.1, math.min(0.9, self.height_ratio or 0.55))
-    self.height = math.floor(Screen:getHeight() * self.height_ratio)
+    self.width = math.max(1, Screen:getWidth() - 2 * OUTER_MARGIN)
+    self.height = math.min(
+        math.floor(Screen:getHeight() * self.height_ratio),
+        math.max(1, Screen:getHeight() - 2 * OUTER_MARGIN))
 
-    self._pages:setContent(self.items, self.doc_font_name, self.doc_font_size,
-        self.doc_margins, self.height_ratio)
+    self._pages:setContent(self.items, self.doc_font_size,
+        self.doc_margins, self:_innerWidth())
     self:_buildLayout()
 end
 
 function ThoughtPopupWidget:_buildLayout()
     self:clear()
 
-    local item_width = math.min(math.ceil(self.doc_margins.right * 2 / 5), Screen:scaleBySize(10))
     local text_w = self._pages.text_w
     local content_h = self._pages.content_h
-
-    local ratio_h = math.floor(Screen:getHeight() * self.height_ratio)
-    local chrome = TOP_BORDER_SIZE + PADDING_TOP + PADDING_BOTTOM
+    local inner_w = self:_innerWidth()
+    local chrome = 2 * FRAME_PAD_V + 2 * FRAME_BORDER
+    local max_h = math.max(1, Screen:getHeight() - 2 * OUTER_MARGIN)
+    local ratio_h = math.min(math.floor(Screen:getHeight() * self.height_ratio), max_h)
     local blank_tolerance = math.ceil((self.doc_font_size or Screen:scaleBySize(22)) * 1.2)
 
     local viewport_h
@@ -156,7 +146,7 @@ function ThoughtPopupWidget:_buildLayout()
         viewport_h = content_h
         self.height = content_h + chrome
     else
-        viewport_h = ratio_h - chrome
+        viewport_h = math.max(1, ratio_h - chrome)
         self.height = ratio_h
     end
     if viewport_h < 1 then viewport_h = 1 end
@@ -164,11 +154,10 @@ function ThoughtPopupWidget:_buildLayout()
     local scroll = ScrollContainer:new{
         content_h = content_h,
         viewport_h = viewport_h,
-        scrollbar_w = item_width,
+        box_w = inner_w,
+        scrollbar_w = SCROLLBAR_W,
         margin_left = self.doc_margins.left,
         text_w = text_w,
-        -- The public popup entry point does not pass a dialog. The bitmap
-        -- viewport must still invalidate this popup after changing offset.
         dialog = self,
         boundaries = self._pages.boundaries,
         page_bb_getter = function(page_idx)
@@ -178,39 +167,34 @@ function ThoughtPopupWidget:_buildLayout()
     }
     self._scroll_container = scroll
 
-    local vgroup_children = {
-        LineWidget:new{
-            dimen = Geom:new{ w = self.width, h = TOP_BORDER_SIZE },
-        },
-        VerticalSpan:new{ width = PADDING_TOP },
-        scroll,
-        VerticalSpan:new{ width = PADDING_BOTTOM },
-    }
-
-    local vgroup = VerticalGroup:new(vgroup_children)
-
     self.container = FrameContainer:new{
         background = Blitbuffer.COLOR_WHITE,
-        bordersize = 0,
+        bordersize = FRAME_BORDER,
+        radius = Size.radius.default,
         margin = 0,
-        padding = 0,
-        vgroup,
+        padding = FRAME_PAD_V,
+        padding_left = FRAME_PAD_H,
+        padding_right = FRAME_PAD_H,
+        width = self.width,
+        VerticalGroup:new{
+            scroll,
+        },
     }
 
-    self[1] = BottomContainer:new{
+    self[1] = CenterContainer:new{
         dimen = Screen:getSize(),
         self.container
     }
 end
 
 function ThoughtPopupWidget:onCloseWidget()
-    UIManager:setDirty(self.dialog, function()
+    UIManager:setDirty(self, function()
         return "partial", self.container.dimen
     end)
     if self.close_callback then
         local callback = self.close_callback
         self.close_callback = nil
-        callback(self.height)
+        callback()
     end
 end
 
@@ -219,16 +203,20 @@ function ThoughtPopupWidget:onClose()
     return true
 end
 
-function ThoughtPopupWidget:onTapClose(_, ges)
-    local scroll_dimen = self._scroll_container and self._scroll_container.dimen
-    if scroll_dimen and ges.pos:notIntersectWith(scroll_dimen) then
+function ThoughtPopupWidget:onTap(_, ges)
+    local frame = self.container and self.container.dimen
+    if not frame then return true end
+    if ges.pos:notIntersectWith(frame) then
         UIManager:close(self)
+        return true
+    end
+    if self._scroll_container then
+        self._scroll_container:scrollToPage(1)
     end
     return true
 end
 
 function ThoughtPopupWidget:onSwipeClose(_, ges)
-    local BD = require("ui/bidi")
     local direction = BD.flipDirectionIfMirroredUILayout(ges.direction)
 
     local scroll_dimen = self._scroll_container and self._scroll_container.dimen
@@ -265,14 +253,6 @@ end
 
 function ThoughtPopupWidget:onPanReleaseScroll(_, ges)
     return self._scroll_container:onPanReleaseText(nil, ges)
-end
-
-function ThoughtPopupWidget:free(full)
-    WidgetContainer.free(self, full)
-end
-
-function ThoughtPopupWidget:_freeContentCaches()
-    self._pages:freeContentCaches()
 end
 
 return ThoughtPopupWidget

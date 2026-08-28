@@ -38,7 +38,7 @@ function Settings:new()
         api_key = "",
         show_annotations = true,
         prefetch_thoughts = true,
-        prefetch_notify = false,
+        prefetch_notify = true,
         debug_log = false,
         prefetch_batch_size = 5,
         prefetch_batch_delay = 0.3,

@@ -6,7 +6,7 @@ Weread Annotation Lite plugin.
 
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local UIManager = require("ui/uimanager")
-local _ = require("gettext")
+local _ = require("lib.i18n")
 local logger = require("lib.logger")
 
 local Settings = require("settings")
@@ -19,7 +19,6 @@ local TocMap = require("lib.toc_map")
 local Plugin = WidgetContainer:extend {
     name = "wereadannotationlite",
     is_doc_only = true,
-    version = "0.1.0",
 }
 
 function Plugin:init()
@@ -129,7 +128,8 @@ function Plugin:isNetworkOnline()
 end
 
 function Plugin:showOffline(label)
-    self:showInfo(tostring(label or "Network") .. ": offline")
+    local T = require("ffi/util").template
+    self:showInfo(T(_("%1: offline"), tostring(label or _("Network"))))
 end
 
 function Plugin:showInputDialog(dialog)
@@ -323,12 +323,9 @@ function Plugin:openThought(record)
     local chapter_uid = record.chapter_uid
     local loading
     if tonumber(record.fetched) == 1 and not self.api.hasThoughtContent(items) then
-        self.database:saveThoughts(file, chapter_uid, record.range, "[]", true)
-        if self._local_annotation_overlay then
-            self._local_annotation_overlay:removeRecord(chapter_uid, record.range)
-        end
         self._thought_open = false
         self.prefetch:resume()
+        self:showTransientInfo(_("No thoughts for this underline."), 2)
         return true
     end
     if #items == 0 then
@@ -374,21 +371,20 @@ function Plugin:openThought(record)
     if #items == 0 then
         self.database:saveThoughts(file, record.chapter_uid, record.range, "[]", true)
         if self._local_annotation_overlay then
-            self._local_annotation_overlay:removeRecord(record.chapter_uid, record.range)
+            self._local_annotation_overlay:updateThought(record.chapter_uid, record.range, {})
         end
         self._thought_open = false
         self.prefetch:resume()
+        self:showTransientInfo(_("No thoughts for this underline."), 2)
         return true
     end
     require("ui.thought_popup").show {
         pages = items,
-        position = "bottom",
-        height_ratio = 0.75,
-        -- Intentionally no doc_font_name: use the popup's Noto Sans default.
-        doc_font_size = require("device").screen:scaleBySize(22),
         close_callback = function()
             self._thought_open = false
             self.prefetch:resume()
+            self._seen_chapter_uid = nil
+            self:onChapterMaybeChanged()
         end,
     }
     return true
@@ -558,7 +554,7 @@ function Plugin:syncUnderlines()
             if success then
                 self.prefetch:request({
                     force = true,
-                    from_start = true,
+                    from_current = true,
                     respect_cooldown = false,
                     notify = true,
                 })
@@ -587,6 +583,9 @@ end
 
 function Plugin:onPageUpdate()
     OverlayController.onPageUpdate(self)
+    if self._local_annotation_overlay then
+        self._local_annotation_overlay:dropFetchedEmpty(self.api.hasThoughtContent)
+    end
     if self._thought_open then return end
     self:onChapterMaybeChanged()
 end

@@ -36,6 +36,7 @@ local ScrollContainer = InputContainer:extend{
     scrollbar_w = Screen:scaleBySize(6),
     margin_left = 0,        -- content left margin (doc_margins.left)
     text_w = 0,             -- content draw width
+    box_w = nil,            -- viewport width; default Screen:getWidth()
     dialog = nil,
     -- Page-break boundary table: { {top, bottom, keep_next?} } in y order.
     -- Page steps land only on boundaries so a line is never split across pages.
@@ -44,8 +45,9 @@ local ScrollContainer = InputContainer:extend{
 }
 
 function ScrollContainer:init()
+    self.box_w = self.box_w or Screen:getWidth()
     self.dimen = Geom:new{
-        w = Screen:getWidth(),
+        w = self.box_w,
         h = self.viewport_h,
     }
     local max_offset = math.max(0, self.content_h - self.viewport_h)
@@ -246,7 +248,7 @@ function ScrollContainer:paintTo(bb, x, y)
 
     if self.v_scroll_bar then
         -- scrollbar hugs the screen right edge (10 px slack)
-        local bar_x = x + Screen:getWidth() - self.scrollbar_w - 10
+        local bar_x = x + self.box_w - self.scrollbar_w
         self.v_scroll_bar.touch_dimen.x = bar_x
         self.v_scroll_bar.touch_dimen.y = y
         self.v_scroll_bar.touch_dimen.w = self.scrollbar_w

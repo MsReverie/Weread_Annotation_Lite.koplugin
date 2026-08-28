@@ -6,7 +6,8 @@ local QRMessage = require("ui/widget/qrmessage")
 local T = require("ffi/util").template
 local UIManager = require("ui/uimanager")
 local Weread = require("lib.protocol")
-local _ = require("gettext")
+local API = require("lib.api")
+local _ = require("lib.i18n")
 
 local BASE_URL = "https://weread.qq.com"
 local SKILLS_PAGE_URL = BASE_URL .. "/r/weread-skills"
@@ -21,32 +22,8 @@ local POLL_TOTAL_TIMEOUT_SECONDS = 8
 local QRLogin = {}
 QRLogin.__index = QRLogin
 
-local function header_value(headers, name)
-    if type(headers) ~= "table" or type(name) ~= "string" then
-        return nil
-    end
-    local target = name:lower()
-    for key, value in pairs(headers) do
-        if type(key) == "string" and key:lower() == target then
-            return value
-        end
-    end
-    return nil
-end
-
-local function deepcopy(value)
-    if type(value) ~= "table" then
-        return value
-    end
-    local copy = {}
-    for key, item in pairs(value) do
-        copy[key] = deepcopy(item)
-    end
-    return copy
-end
-
 local function merge_response_cookies(cookies, headers)
-    local set_cookie = header_value(headers, "set-cookie")
+    local set_cookie = API.header_value(headers, "set-cookie")
     if set_cookie then
         return Cookie.merge_set_cookie(cookies or {}, set_cookie)
     end
@@ -101,9 +78,9 @@ function QRLogin:_request_json(url, opts, stage)
     end
     if code < 200 or code >= 300 then
         local request_headers = opts.headers or {}
-        local cookie_header = header_value(request_headers, "cookie")
-        local vid_header = header_value(request_headers, "x-vid")
-        local skey_header = header_value(request_headers, "x-skey")
+        local cookie_header = API.header_value(request_headers, "cookie")
+        local vid_header = API.header_value(request_headers, "x-vid")
+        local skey_header = API.header_value(request_headers, "x-skey")
         logger.warn(
             stage, "rejected:", "HTTP", tostring(code),
             "cookie_bytes=", tostring(#tostring(cookie_header or "")),
@@ -243,7 +220,7 @@ function QRLogin:_complete_protocol(login_result, generation)
     -- A QR login represents a complete account switch. Build a fresh jar from
     -- this login session so credentials from a previously signed-in account
     -- cannot leak into the new session.
-    local cookies = deepcopy(self.login_cookies or {})
+    local cookies = API.deepcopy(self.login_cookies or {})
     cookies.wr_vid = web_login_vid
     cookies.wr_skey = access_token
     cookies.wr_ql = "0"

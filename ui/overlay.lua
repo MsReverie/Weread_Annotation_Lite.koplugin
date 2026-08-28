@@ -13,8 +13,7 @@ function Overlay:new(opts)
     return setmetatable({
         records = opts.records or {}, enabled = opts.enabled ~= false,
         cache = {}, visible = {}, generation = 1,
-        clock = opts.clock or os.clock, hit_padding = tonumber(opts.hit_padding) or 3,
-        last_metrics = { candidates = 0, boxes = 0, elapsed_ms = 0, cache_hit = false },
+        hit_padding = tonumber(opts.hit_padding) or 3,
     }, self)
 end
 
@@ -56,6 +55,19 @@ function Overlay:updateThought(chapter_uid, range, items)
             return
         end
     end
+end
+
+function Overlay:dropFetchedEmpty(has_thoughts)
+    local records = self.records or {}
+    local changed = false
+    for i = #records, 1, -1 do
+        local rec = records[i]
+        if tonumber(rec.fetched) == 1 and not has_thoughts(rec.items) then
+            table.remove(records, i)
+            changed = true
+        end
+    end
+    if changed then self:invalidate() end
 end
 
 function Overlay:removeRecord(chapter_uid, range)
@@ -148,13 +160,13 @@ end
 function Overlay:_computeVisible()
     local document = self.ui and self.ui.document
     local view = self.view
-    if not document or not view or self.ui.paging then return {}, 0 end
+    if not document or not view or self.ui.paging then return {} end
     local top = tonumber((document:getCurrentPos())) or 0
     local height = self.ui.dimen and tonumber(self.ui.dimen.h) or 0
     local pages = tonumber((document:getVisiblePageCount())) or 1
     local bottom = top + height * math.max(1, pages)
     self:_refreshPositions(document)
-    local visible, candidates = {}, 0
+    local visible = {}
     for _, record in ipairs(self.records) do
         if record.pos0 and record.pos1 then
             local start_pos = record._start_pos
@@ -163,7 +175,6 @@ function Overlay:_computeVisible()
                 break
             end
             if start_pos and end_pos and start_pos <= bottom and end_pos >= top then
-                candidates = candidates + 1
                 local boxes = document:getScreenBoxesFromPositions(record.pos0, record.pos1, true)
                 if type(boxes) == "table" then
                     for _, rect in ipairs(boxes) do
@@ -175,15 +186,12 @@ function Overlay:_computeVisible()
             end
         end
     end
-    return visible, candidates
+    return visible
 end
 
 function Overlay:paintTo(bb, x, y)
-    local started = self.clock()
     if not self.enabled or #self.records == 0 then
         self.visible = {}
-        self.last_metrics = { candidates = 0, boxes = 0,
-            elapsed_ms = (self.clock() - started) * 1000, cache_hit = false }
         return
     end
     local document = self.ui and self.ui.document
@@ -201,17 +209,15 @@ function Overlay:paintTo(bb, x, y)
         cache_key = tostring(self.generation) .. ":s:" .. tostring(top) .. ":" .. tostring(bottom)
     end
     local cached = self._cache_key == cache_key and self.cache[cache_key] or nil
-    local boxes, candidates
+    local boxes
     if cached then
-        boxes, candidates = cached.boxes, cached.candidates
+        boxes = cached
     else
-        boxes, candidates = self:_computeVisible()
+        boxes = self:_computeVisible()
         self._cache_key = cache_key
-        self.cache = { [cache_key] = { boxes = boxes, candidates = candidates } }
+        self.cache = { [cache_key] = boxes }
     end
     draw_boxes(self, bb, x, y, boxes)
-    self.last_metrics = { candidates = candidates, boxes = #boxes,
-        elapsed_ms = (self.clock() - started) * 1000, cache_hit = cached ~= nil }
 end
 
 function Overlay:hitTest(pos)

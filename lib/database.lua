@@ -2,22 +2,14 @@ local Database = {}
 Database.__index = Database
 local json = require("json")
 local Crypto = require("lib.crypto")
-
-local function items_have_thoughts(items)
-    for _, item in ipairs(items or {}) do
-        if type(item.content) == "string" and item.content:find("%S") then
-            return true
-        end
-    end
-    return false
-end
+local hasThoughtContent = require("lib.api").hasThoughtContent
 
 function Database:new(settings)
     return setmetatable({ settings = settings }, self)
 end
 
 function Database:path(file)
-    local base = self.settings:get("data_dir") or self.settings:get("cache_dir") or "."
+    local base = self.settings:get("data_dir") or "."
     local document_path = tostring(file or "")
     local suffix = Crypto.sha256_hex(document_path):sub(1, 16)
     return base .. "/" .. suffix .. ".db"
@@ -125,7 +117,7 @@ function Database:getDocument(file)
     while item do
         local items = json.decode(item[6] or "[]") or {}
         local fetched = tonumber(item[7]) or 0
-        if fetched ~= 1 or items_have_thoughts(items) then
+        if fetched ~= 1 or hasThoughtContent(items) then
             value.records[#value.records + 1] = {
                 chapter_uid = item[1],
                 range = item[2],
@@ -293,7 +285,7 @@ function Database:thoughtlessSet(file)
     local set, row = {}, stmt:reset():step()
     while row do
         local items = json.decode(row[3] or "[]") or {}
-        if not items_have_thoughts(items) then
+        if not hasThoughtContent(items) then
             set[tostring(row[1]) .. "\0" .. tostring(row[2])] = true
         end
         row = stmt:step()

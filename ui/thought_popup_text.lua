@@ -1,14 +1,11 @@
 --[[--
 Thought popup content builder.
 
-Normalized review items (lib.annotations records: abstract, author,
-content, likes_count) become a widget-independent block tree consumed by
-widget.lua:
+Review items (abstract, author, content, likes_count) become a block tree:
 
     { kind="paragraph", variant=<quote|meta|content>, text=..., fg=gray level }
 
-Size variants for each block live in face_factory.lua (VARIANTS); the gray
-levels below match the WeRead reader's footnote styling.
+Size variants live in FaceFactory.VARIANTS.
 --]]
 
 local util = require("util")
@@ -115,9 +112,7 @@ function ContentBuilder.build(items)
     end
 
     local first = items[1] or {}
-    local quote_source = first.abstract or first.original_text
-        or first.originalText or first.text
-    local quote = buildQuoteText(quote_source)
+    local quote = buildQuoteText(first.abstract)
     if quote then
         blocks[#blocks + 1] = {
             kind = "paragraph",
@@ -160,22 +155,8 @@ end
 --[[--
 Thought popup face factory.
 
-Builds KOReader FontFaceObj tables directly:
-
-  * primary face: the document font (real font file resolved through
-    cre.getFontFaceFilenameAndFaceIndex), or the built-in Noto Sans family
-    when no document font is available;
-  * fallback chain: NotoSansCJKsc -> ... -> NotoEmoji prefilled into
-    face.fallbacks; xtext (HarfBuzz) switches fonts per glyph automatically,
-    so emoji never needs per-character spans.
-
-Faces are cached process-wide by (doc_font_name, size, variant); glyph bitmaps
-are cached by KOReader's Fontcache, so after the first popup there is no font
-file I/O.
-
-The face table mirrors Font:getAdjustedFace's clone (frontend/ui/font.lua);
-prefilling fallbacks short-circuits font.lua's name-based resolution
-(_getFallbackFont checks face_obj.fallbacks[num] first).
+Noto Sans (italic for quotes) plus a CJK/emoji fallback chain. Faces are
+cached process-wide by (size, variant).
 --]]
 
 local FontList = require("fontlist")
@@ -185,7 +166,6 @@ local logger = require("lib.logger")
 local FaceFactory = {
     initialized = false,
     emoji_path = nil,
-    font_paths_cache = {},
     face_cache = {},
     fallback_cache = {}, -- path|size -> FontFaceObj (fallback faces shared across variants)
 }
@@ -246,36 +226,6 @@ function FaceFactory:findEmojiFont()
         end
     end
     return nil
-end
-
---- Real font files of the document font, cached by font name.
---- @param doc_font_name string|nil
---- @return table[] { { path=string, bold=bool, italic=bool }, ... }
-function FaceFactory:getFontPaths(doc_font_name)
-    if not doc_font_name then return {} end
-    if self.font_paths_cache[doc_font_name] then
-        return self.font_paths_cache[doc_font_name]
-    end
-
-    local paths = {}
-    local ok, cre = pcall(function()
-        return require("document/credocument"):engineInit()
-    end)
-    if ok and cre and type(cre.getFontFaceFilenameAndFaceIndex) == "function" then
-        local seen = {}
-        for i = 1, 4 do
-            local bold = i >= 3
-            local italic = i == 2 or i == 4
-            local font_path = cre.getFontFaceFilenameAndFaceIndex(doc_font_name, bold, italic)
-            if font_path and not seen[font_path] then
-                seen[font_path] = true
-                paths[#paths + 1] = { path = font_path, bold = bold, italic = italic }
-            end
-        end
-    end
-
-    self.font_paths_cache[doc_font_name] = paths
-    return paths
 end
 
 --- Hand-built FontFaceObj (modeled on Font:getAdjustedFace's clone).
@@ -399,53 +349,27 @@ function FaceFactory:_addFallbacks(face, size)
 end
 
 --- Get a variant face (process-wide cache).
---- @param doc_font_name string|nil unused for the default popup; nil -> Noto Sans
---- @param size number DPI-scaled base size (i.e. doc_font_size)
+--- @param size number DPI-scaled base size
 --- @param variant string key of VARIANTS
-function FaceFactory:getFace(doc_font_name, size, variant)
+function FaceFactory:getFace(size, variant)
     variant = variant or "content"
-    local key = string.format("%s|%d|%s", doc_font_name or "", size or 0, variant)
+    local key = string.format("%d|%s", size or 0, variant)
     local cached = self.face_cache[key]
     if cached then return cached end
 
     local ratio = self.VARIANTS[variant] or 1.0
     local v_size = math.max(8, math.floor(size * ratio + 0.5))
-    local face
-
-    local paths = self:getFontPaths(doc_font_name)
-    local regular, italic
-    for _, fp in ipairs(paths) do
-        if not fp.bold then
-            if fp.italic then
-                if not italic then italic = fp.path end
-            elseif not regular then
-                regular = fp.path
-            end
-        end
-    end
     local prefer_italic = variant == "quote"
-    local path = prefer_italic and (italic or regular) or (regular or italic)
+    local path = resolveBundledFont(
+            prefer_italic and "NotoSans-Italic.ttf" or "NotoSans-Regular.ttf")
+        or resolveBundledFont("NotoSansCJKsc-Regular.otf")
+    local face
     if path then
         face = self:_buildFace(path, v_size)
         if face then
             self:_addFallbacks(face, v_size)
         end
     end
-
-    -- Fallback when the document font cannot be resolved: use a bundled font
-    -- (also hand-built to avoid the double DPI scaling).
-    if not face then
-        local fallback_path = resolveBundledFont(
-                prefer_italic and "NotoSans-Italic.ttf" or "NotoSans-Regular.ttf")
-            or resolveBundledFont("NotoSansCJKsc-Regular.otf")
-        if fallback_path then
-            face = self:_buildFace(fallback_path, v_size)
-            if face then
-                self:_addFallbacks(face, v_size)
-            end
-        end
-    end
-
     if face then
         self.face_cache[key] = face
     end

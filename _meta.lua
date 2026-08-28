@@ -1,4 +1,4 @@
-local _ = require("gettext")
+local _ = require("lib.i18n")
 
 return {
     fullname = _("Weread Annotation Lite"),
