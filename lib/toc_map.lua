@@ -45,6 +45,31 @@ function TocMap.match(weread_chapters, toc_items)
             end
         end
     end
+    -- Title match can miss a later chapter (e.g. 第六章 vs 第6章). Pair any
+    -- leftover WeRead chapter with the next unused TOC entry after the
+    -- previous match so uidAtPos still changes at that boundary.
+    local last_idx = 0
+    for _, chapter in ipairs(weread_chapters or {}) do
+        local uid = tostring(chapter.chapterUid or "")
+        if uid ~= "" then
+            if map[uid] then
+                last_idx = map[uid]
+            else
+                local found
+                for i = last_idx + 1, #(toc_items or {}) do
+                    if not used[i] then
+                        found = i
+                        break
+                    end
+                end
+                if found then
+                    used[found] = true
+                    map[uid] = found
+                    last_idx = found
+                end
+            end
+        end
+    end
     return map
 end
 

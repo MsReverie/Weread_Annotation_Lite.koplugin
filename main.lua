@@ -266,10 +266,10 @@ function Plugin:onChapterMaybeChanged()
     if not self.settings:get("show_annotations", true) then return end
     if not self.settings:get("prefetch_thoughts", true) then return end
     if not (self.ui and self.ui.document) then return end
-    local uid = self:currentWereadChapterUid()
-    if not uid or uid == self._seen_chapter_uid then return end
-    self._seen_chapter_uid = uid
-    self.prefetch:afterChapterTurn(uid)
+    -- Do not latch _seen_chapter_uid here. Marking the chapter "seen" before
+    -- request() actually starts a job made a skipped turn (offline, in-flight
+    -- job, cooldown, unknown uid) never retry while still in that chapter.
+    self.prefetch:ensureAhead()
 end
 
 function Plugin:prefetchThoughts(silent)
@@ -587,6 +587,21 @@ function Plugin:onPageUpdate()
         self._local_annotation_overlay:dropFetchedEmpty(self.api.hasThoughtContent)
     end
     if self._thought_open then return end
+    self:onChapterMaybeChanged()
+end
+
+-- CRE scroll mode emits PosUpdate, not PageUpdate. Without this the next
+-- 5-chapter underline window never starts after the first batch.
+function Plugin:onPosUpdate()
+    if self._thought_open then return end
+    self:onChapterMaybeChanged()
+end
+
+function Plugin:onNetworkConnected()
+    self:onChapterMaybeChanged()
+end
+
+function Plugin:onResume()
     self:onChapterMaybeChanged()
 end
 

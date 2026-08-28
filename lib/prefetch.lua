@@ -191,8 +191,12 @@ function Prefetch:planWindow(file, current_uid, opts)
     end
 
     local cached = self.plugin.database:cachedChapterSet(file)
+    -- Include the current chapter: a hole here must be filled even when the
+    -- next 1–3 chapters are already cached (otherwise chapter 6 is skipped
+    -- after a 1–5 window if 7–9 were filled first).
+    local start = cached[current_uid] and (idx + 1) or idx
     local hole = false
-    for i = idx + 1, math.min(idx + 3, #chapters) do
+    for i = start, math.min(idx + 3, #chapters) do
         if not cached[tostring(chapters[i].chapterUid)] then
             hole = true
             break
@@ -201,7 +205,6 @@ function Prefetch:planWindow(file, current_uid, opts)
     if not hole then
         return nil, idx >= #chapters and "end-of-book" or "ahead-ok"
     end
-    local start = cached[current_uid] and (idx + 1) or idx
     for i = start, #chapters do
         local uid = tostring(chapters[i].chapterUid)
         if not cached[uid] then
@@ -271,7 +274,10 @@ function Prefetch:ensureAhead()
             return
         end
         local uid = plugin:currentWereadChapterUid()
-        if not uid then return end
+        if not uid then
+            logger.debug("prefetch ensureAhead skip: unknown-chapter")
+            return
+        end
         self:request({ chapter_uid = uid })
     end)
 end
@@ -334,6 +340,7 @@ function Prefetch:request(opts)
         force = opts.force,
     })
     if not window then
+        logger.debug("prefetch plan skip:", reason, "uid=", chapter_uid)
         if opts.notify and reason == "no-catalog" then
             plugin:showInfo(_("Could not load the Weread chapter list."))
         end
