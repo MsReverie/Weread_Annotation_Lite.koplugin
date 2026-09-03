@@ -11,15 +11,16 @@ if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     exit 1
 fi
 
+plugin_dirname="wereadannotationlite.koplugin"
 archive="${2:-$root/dist/Weread_Annotation_Lite.koplugin.v${version}.zip}"
 stage="$(mktemp -d)"
-plugin="$stage/Weread_Annotation_Lite.koplugin"
+plugin="$stage/$plugin_dirname"
 mkdir -p "$plugin" "$(dirname "$archive")"
 
 cp "$root/_meta.lua" "$root/main.lua" "$root/settings.lua" "$root/LICENSE" "$root/README.md" "$plugin/"
 cp -R "$root/lib" "$root/ui" "$plugin/"
 
 rm -f "$archive"
-(cd "$stage" && zip -r "$archive" Weread_Annotation_Lite.koplugin >/dev/null)
+(cd "$stage" && zip -r "$archive" "$plugin_dirname" >/dev/null)
 rm -rf "$stage"
 echo "$archive"

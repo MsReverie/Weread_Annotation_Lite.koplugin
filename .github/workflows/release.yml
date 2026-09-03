@@ -49,14 +49,18 @@ jobs:
         run: |
           set -euo pipefail
           archive="${{ steps.version.outputs.archive }}"
-          unzip -Z1 "$archive" | grep -qx "Weread_Annotation_Lite.koplugin/main.lua"
-          unzip -Z1 "$archive" | grep -qx "Weread_Annotation_Lite.koplugin/_meta.lua"
-          unzip -Z1 "$archive" | grep -qx "Weread_Annotation_Lite.koplugin/lib/ota.lua"
-          if unzip -Z1 "$archive" | grep -Eq 'Weread_Annotation_Lite\.koplugin/(spec|\.github|scripts)/'; then
+          unzip -Z1 "$archive" | grep -qx "wereadannotationlite.koplugin/main.lua"
+          unzip -Z1 "$archive" | grep -qx "wereadannotationlite.koplugin/_meta.lua"
+          unzip -Z1 "$archive" | grep -qx "wereadannotationlite.koplugin/lib/ota.lua"
+          if unzip -Z1 "$archive" | grep -Eq 'Weread_Annotation_Lite\.koplugin/'; then
+            echo "error: package must use wereadannotationlite.koplugin/ as the top-level folder" >&2
+            exit 1
+          fi
+          if unzip -Z1 "$archive" | grep -Eq 'wereadannotationlite\.koplugin/(spec|\.github|scripts)/'; then
             echo "error: development-only files were included in the release package" >&2
             exit 1
           fi
-          staged_version="$(unzip -p "$archive" Weread_Annotation_Lite.koplugin/_meta.lua \
+          staged_version="$(unzip -p "$archive" wereadannotationlite.koplugin/_meta.lua \
             | sed -nE 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' | head -n 1)"
           if [[ "$staged_version" != "${{ steps.version.outputs.current }}" ]]; then
             echo "error: packaged _meta.lua version $staged_version != ${{ steps.version.outputs.current }}" >&2
