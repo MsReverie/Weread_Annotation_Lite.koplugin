@@ -111,6 +111,7 @@ function Prefetch:cancel()
     self._cooldown_pending = false
     self._paused = false
     self._turn_token = nil
+    self._unknown_chapter_notified = false
     self:_stopBg()
     self:_releaseStandby()
     self:_closeJobDb()
@@ -156,8 +157,9 @@ function Prefetch:ensureCatalog(file, binding)
     end
     local synckey = tonumber(catalog.synckey) or 0
     self.plugin.database:saveChapters(file, filtered, synckey)
-    self.plugin._chapter_list = filtered
-    self.plugin._toc_map = nil
+    if self.plugin.toc_map then
+        self.plugin.toc_map:clearCache()
+    end
     return filtered
 end
 
@@ -190,14 +192,21 @@ function Prefetch:planWindow(file, current_uid, opts)
         return window
     end
 
-    local cached = self.plugin.database:cachedChapterSet(file)
-    -- Include the current chapter: a hole here must be filled even when the
-    -- next 1–3 chapters are already cached (otherwise chapter 6 is skipped
-    -- after a 1–5 window if 7–9 were filled first).
-    local start = cached[current_uid] and (idx + 1) or idx
+    local ready = self.plugin.database:readyChapterSet(file)
+    local start = ready[current_uid] and (idx + 1) or idx
+    local all_ready = true
+    for i = 1, #chapters do
+        if not ready[tostring(chapters[i].chapterUid)] then
+            all_ready = false
+            break
+        end
+    end
+    if all_ready then
+        return nil, "already-cached"
+    end
     local hole = false
     for i = start, math.min(idx + 3, #chapters) do
-        if not cached[tostring(chapters[i].chapterUid)] then
+        if not ready[tostring(chapters[i].chapterUid)] then
             hole = true
             break
         end
@@ -205,11 +214,39 @@ function Prefetch:planWindow(file, current_uid, opts)
     if not hole then
         return nil, idx >= #chapters and "end-of-book" or "ahead-ok"
     end
-    for i = start, #chapters do
-        local uid = tostring(chapters[i].chapterUid)
-        if not cached[uid] then
-            window[#window + 1] = chapters[i]
-            if #window >= window_size then break end
+    if not ready[current_uid] and idx >= #chapters then
+        return nil, "end-of-book"
+    end
+    if not ready[current_uid] then
+        local j = idx + 1
+        while j <= #chapters and ready[tostring(chapters[j].chapterUid)] do j = j + 1 end
+        local has_ready_ahead = j > idx + 1
+        local k = idx - 1
+        while k >= 1 and ready[tostring(chapters[k].chapterUid)] do k = k - 1 end
+        local has_ready_before = k < idx - 1
+        if has_ready_ahead and has_ready_before then
+            window[#window + 1] = chapters[idx]
+        elseif has_ready_ahead then
+            window[#window + 1] = chapters[idx]
+            if j <= #chapters then
+                window[#window + 1] = chapters[j]
+            end
+        else
+            for i = idx, #chapters do
+                local uid = tostring(chapters[i].chapterUid)
+                if not ready[uid] then
+                    window[#window + 1] = chapters[i]
+                    if #window >= window_size then break end
+                end
+            end
+        end
+    else
+        for i = start, #chapters do
+            local uid = tostring(chapters[i].chapterUid)
+            if not ready[uid] then
+                window[#window + 1] = chapters[i]
+                if #window >= window_size then break end
+            end
         end
     end
     if #window == 0 then
@@ -236,13 +273,14 @@ function Prefetch:_prepareLocateRows(chapter_uid, rows)
     if #rows == 0 then return rows end
     local file = self.plugin.ui and self.plugin.ui.document and self.plugin.ui.document.file
     if not file then return rows end
-    local skip = self.plugin.database:thoughtlessSet(file)
-    if not next(skip) then return rows end
+    local pending = {}
+    for _, range in ipairs(self.plugin.database:getUnlocatedRanges(file, chapter_uid) or {}) do
+        pending[tostring(range)] = true
+    end
     local kept = {}
-    chapter_uid = tostring(chapter_uid)
     for _, row in ipairs(rows) do
-        local key = chapter_uid .. "\0" .. tostring(row.range or "")
-        if not skip[key] then
+        local range = tostring(row.range or "")
+        if pending[range] then
             kept[#kept + 1] = row
         end
     end
@@ -258,7 +296,7 @@ function Prefetch:afterChapterTurn(_chapter_uid)
 end
 
 -- Debounced chapter-boundary check: fetch a 5-chapter batch when any of
--- the next 1–3 chapters is uncached (and request() is not in cooldown).
+-- the next 1–3 chapters is not locate-ready (and request() is not in cooldown).
 function Prefetch:ensureAhead()
     local plugin = self.plugin
     local token = {}
@@ -273,9 +311,14 @@ function Prefetch:ensureAhead()
             self._followup = true
             return
         end
-        local uid = plugin:currentWereadChapterUid()
+        local uid = plugin.toc_map and plugin.toc_map:currentWereadChapterUid()
         if not uid then
             logger.debug("prefetch ensureAhead skip: unknown-chapter")
+            local file = plugin.ui.document and plugin.ui.document.file
+            if file and plugin.database:getBinding(file) and not self._unknown_chapter_notified then
+                self._unknown_chapter_notified = true
+                notify(self, _("Could not detect the current chapter."))
+            end
             return
         end
         self:request({ chapter_uid = uid })
@@ -333,7 +376,7 @@ function Prefetch:request(opts)
         return
     end
 
-    local chapter_uid = opts.chapter_uid or plugin:currentWereadChapterUid()
+    local chapter_uid = opts.chapter_uid or (plugin.toc_map and plugin.toc_map:currentWereadChapterUid())
     if not chapter_uid and not opts.force then return end
 
     local window, reason = self:planWindow(file, chapter_uid, {
@@ -357,7 +400,9 @@ function Prefetch:request(opts)
             self._cooldown_pending = true
             later(cooldown - elapsed, function()
                 self._cooldown_pending = false
-                local next_opts = opts.force and opts or { chapter_uid = plugin:currentWereadChapterUid() }
+                local next_opts = opts.force and opts or {
+                    chapter_uid = plugin.toc_map and plugin.toc_map:currentWereadChapterUid(),
+                }
                 self:request(next_opts)
             end)
         end
@@ -368,7 +413,7 @@ function Prefetch:request(opts)
         notify(self, _("Fetching underlines…"), 2)
     end
     if chapter_uid then
-        plugin._seen_chapter_uid = tostring(chapter_uid)
+        self._unknown_chapter_notified = false
     end
     self:_holdStandby()
     self:startUnderlines(file, binding, window, gen, opts.force)
@@ -459,13 +504,15 @@ function Prefetch:startUnderlines(file, binding, window, gen, force)
         end
         local document = self.plugin.ui and self.plugin.ui.document
         if document then
-            local ok, rec, cursor, from_xp = pcall(Locator.locateOne, document,
-                job.uid, row, job.cursor, job.bounds, job.from_xp)
-            if ok and rec then
-                job.located[#job.located + 1] = rec
-                job.cursor = cursor
-                job.from_xp = from_xp
-            elseif not ok then
+            local ok, rec, cursor = pcall(Locator.locateOne, document,
+                job.uid, row, job.cursor, job.bounds)
+            if ok then
+                self.plugin.database:markLocateAttempted(job.file, job.uid, row.range)
+                if rec then
+                    job.located[#job.located + 1] = rec
+                    job.cursor = cursor
+                end
+            else
                 logger.err("Prefetch locate failed:", rec)
             end
         end
@@ -474,19 +521,20 @@ function Prefetch:startUnderlines(file, binding, window, gen, force)
     end
 
     local function start_locate(cache)
-        local skip_locate = not force
-            and cache
-            and not job.prune[job.uid]
-            and self.plugin.database:hasLocatedChapter(file, job.uid)
-        if skip_locate then
+        local items = cache and cache.items or {}
+        self.plugin.database:ensureUnderlineRows(file, job.uid, items)
+        if force then
+            job.rows = Locator.sortedRows(items)
+        else
+            job.rows = self:_prepareLocateRows(job.uid, items)
+        end
+        if #job.rows == 0 then
             chapter_done()
             return
         end
-        job.rows = self:_prepareLocateRows(job.uid, cache and cache.items or {})
         job.row_i = 1
         job.cursor = -math.huge
-        job.bounds = self.plugin:getChapterBounds(job.uid)
-        job.from_xp = job.bounds and job.bounds.start_xp
+        job.bounds = self.plugin.toc_map and self.plugin.toc_map:getChapterBounds(job.uid)
         locate_one()
     end
 
@@ -642,8 +690,8 @@ function Prefetch:startThoughts(file, binding, chapters, gen)
                     if not found_ranges[range] then
                         self.plugin.database:saveThoughts(file, job.chapter_uid, range, "[]", true)
                         if self.plugin._local_annotation_overlay then
-                            self.plugin._local_annotation_overlay:removeRecord(
-                                job.chapter_uid, range)
+                            self.plugin._local_annotation_overlay:updateThought(
+                                job.chapter_uid, range, {})
                         end
                     end
                 end

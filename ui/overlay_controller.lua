@@ -23,8 +23,9 @@ function M.onReaderReady(plugin)
         overrides = { "tap_forward", "tap_backward", "readerfooter_tap" },
         handler = function(ges)
             local record = overlay:hitTest(ges and ges.pos)
-            if record then plugin:openThought(record); return true end
-            return false
+            if not record then return false end
+            plugin:openThought(record)
+            return true
         end }})
 end
 
@@ -37,7 +38,9 @@ function M.onDocumentRerendered(plugin)
     if plugin._local_annotation_overlay then
         plugin._local_annotation_overlay:invalidate()
     end
-    plugin._toc_map = nil
+    if plugin.toc_map then
+        plugin.toc_map:clearCache()
+    end
 end
 
 function M.onCloseDocument(plugin)
@@ -48,6 +51,9 @@ function M.onCloseDocument(plugin)
         plugin.ui.view.view_modules[MODULE] = nil
     end
     plugin._local_annotation_overlay = nil
+    if plugin.toc_map then
+        plugin.toc_map:clearCache()
+    end
 end
 
 return M

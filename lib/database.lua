@@ -16,7 +16,10 @@ function Database:path(file)
 end
 
 function Database:saveBinding(file, binding)
-    local db = self:open(file, true)
+    local db, open_err = self:open(file, true)
+    if not db then
+        return nil, open_err
+    end
     local stmt = db:prepare([[INSERT INTO book(file,book_id,title,author,updated_at)
         VALUES(?,?,?,?,?) ON CONFLICT(file) DO UPDATE SET book_id=excluded.book_id,
         title=excluded.title,author=excluded.author,updated_at=excluded.updated_at]])
@@ -28,13 +31,51 @@ function Database:saveRecords(file, records)
     local db, open_err = self:open(file, true)
     if not db then return nil, open_err end
     db:exec("BEGIN")
-    local stmt = db:prepare([[INSERT INTO annotations(chapter_uid,range,text,pos0,pos1,items,fetched)
-        VALUES(?,?,?,?,?,?,?) ON CONFLICT(chapter_uid,range) DO UPDATE SET
-        text=excluded.text,pos0=excluded.pos0,pos1=excluded.pos1]])
+    local stmt = db:prepare([[INSERT INTO annotations(chapter_uid,range,text,pos0,pos1,items,fetched,locate_attempted)
+        VALUES(?,?,?,?,?,?,?,1) ON CONFLICT(chapter_uid,range) DO UPDATE SET
+        text=excluded.text,pos0=excluded.pos0,pos1=excluded.pos1,locate_attempted=1]])
     for _, r in ipairs(records or {}) do
         stmt:reset():bind(r.chapter_uid, r.range, r.text or "", r.pos0, r.pos1, "[]", 0):step()
     end
     stmt:close(); db:exec("COMMIT"); self:release(db)
+end
+
+function Database:ensureUnderlineRows(file, chapter_uid, items)
+    local db, open_err = self:open(file, true)
+    if not db then return nil, open_err end
+    local stmt = db:prepare([[INSERT INTO annotations(
+        chapter_uid,range,text,pos0,pos1,items,fetched,locate_attempted)
+        VALUES(?,?,?,NULL,NULL,'[]',0,0)
+        ON CONFLICT(chapter_uid,range) DO UPDATE SET text=excluded.text]])
+    chapter_uid = tostring(chapter_uid)
+    for _, item in ipairs(items or {}) do
+        local range = tostring(item.range or "")
+        if range ~= "" then
+            stmt:reset():bind(chapter_uid, range, item.markText or item.text or ""):step()
+        end
+    end
+    stmt:close(); self:release(db)
+end
+
+function Database:markLocateAttempted(file, chapter_uid, range)
+    local db, open_err = self:open(file, true)
+    if not db then return nil, open_err end
+    local stmt = db:prepare([[UPDATE annotations SET locate_attempted=1
+        WHERE chapter_uid=? AND range=?]])
+    stmt:reset():bind(tostring(chapter_uid), tostring(range)):step()
+    stmt:close(); self:release(db)
+end
+
+function Database:getUnlocatedRanges(file, chapter_uid)
+    local db = self:open(file, false)
+    if not db then return {} end
+    local stmt = db:prepare([[SELECT range FROM annotations
+        WHERE chapter_uid=? AND locate_attempted=0 ORDER BY range]])
+    local rows, row = {}, stmt:reset():bind(tostring(chapter_uid)):step()
+    while row do
+        rows[#rows + 1] = tostring(row[1]); row = stmt:step()
+    end
+    stmt:close(); self:release(db); return rows
 end
 
 function Database:getUnderlineCache(file, chapter_uid)
@@ -64,9 +105,7 @@ function Database:saveUnderlineCache(file, chapter_uid, synckey, items)
 end
 
 function Database:clear(file)
-    if self._session_file == file then
-        self:endSession()
-    end
+    self:endSession()
     local path = self:path(file)
     for _, suffix in ipairs({ "", "-wal", "-shm" }) do os.remove(path .. suffix) end
 end
@@ -83,7 +122,9 @@ end
 function Database:getRanges(file, chapter_uid)
     local db = self:open(file, false)
     if not db then return {} end
-    local stmt = db:prepare("SELECT range FROM annotations WHERE chapter_uid=? AND fetched=0 ORDER BY range")
+    local stmt = db:prepare([[SELECT range FROM annotations
+        WHERE chapter_uid=? AND fetched=0 AND pos0 IS NOT NULL AND pos0 != ''
+        ORDER BY range]])
     local rows, row = {}, stmt:reset():bind(chapter_uid):step()
     while row do
         rows[#rows + 1] = row[1]; row = stmt:step()
@@ -117,17 +158,15 @@ function Database:getDocument(file)
     while item do
         local items = json.decode(item[6] or "[]") or {}
         local fetched = tonumber(item[7]) or 0
-        if fetched ~= 1 or hasThoughtContent(items) then
-            value.records[#value.records + 1] = {
-                chapter_uid = item[1],
-                range = item[2],
-                text = item[3],
-                pos0 = item[4],
-                pos1 = item[5],
-                items = items,
-                fetched = fetched,
-            }
-        end
+        value.records[#value.records + 1] = {
+            chapter_uid = item[1],
+            range = item[2],
+            text = item[3],
+            pos0 = item[4],
+            pos1 = item[5],
+            items = items,
+            fetched = fetched,
+        }
         item = records:step()
     end
     records:close(); self:release(db)
@@ -183,7 +222,15 @@ function Database:open(file, create)
     db:exec([[CREATE TABLE IF NOT EXISTS annotations (
         chapter_uid TEXT NOT NULL, range TEXT NOT NULL, text TEXT,
         pos0 TEXT, pos1 TEXT, items TEXT, fetched INTEGER NOT NULL DEFAULT 0,
+        locate_attempted INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY(chapter_uid, range)) WITHOUT ROWID]])
+    pcall(function()
+        db:exec("ALTER TABLE annotations ADD COLUMN locate_attempted INTEGER NOT NULL DEFAULT 0")
+    end)
+    pcall(function()
+        db:exec([[UPDATE annotations SET locate_attempted=1
+            WHERE pos0 IS NOT NULL AND pos0 != '']])
+    end)
     db:exec([[CREATE TABLE IF NOT EXISTS chapters (
         chapter_uid TEXT PRIMARY KEY, title TEXT, position INTEGER NOT NULL) WITHOUT ROWID]])
     db:exec([[CREATE TABLE IF NOT EXISTS underline_cache (
@@ -201,16 +248,6 @@ function Database:getChapterSynckey(file)
     local row = stmt:reset():bind("chapter_synckey"):step()
     stmt:close(); self:release(db)
     return row and tonumber(row[1]) or 0
-end
-
-function Database:hasLocatedChapter(file, chapter_uid)
-    local db = self:open(file, false)
-    if not db then return false end
-    local stmt = db:prepare(
-        "SELECT 1 FROM annotations WHERE chapter_uid=? AND pos0 IS NOT NULL AND pos0 != '' LIMIT 1")
-    local row = stmt:reset():bind(tostring(chapter_uid)):step()
-    stmt:close(); self:release(db)
-    return row ~= nil
 end
 
 function Database:pruneChapterRanges(file, chapter_uid, keep_ranges)
@@ -294,17 +331,43 @@ function Database:thoughtlessSet(file)
     return set
 end
 
-function Database:cachedChapterSet(file)
+-- A chapter is ready when every cached underline has been locate-attempted.
+-- Misses count as done; untried rows do not.
+function Database:readyChapterSet(file)
     local db = self:open(file, false)
     if not db then return {} end
-    local stmt = db:prepare("SELECT chapter_uid FROM underline_cache")
-    local set, row = {}, stmt:reset():step()
+    local attempted = {}
+    local stmt = db:prepare("SELECT chapter_uid, range, locate_attempted FROM annotations")
+    local row = stmt:reset():step()
     while row do
-        set[tostring(row[1])] = true
+        local uid = tostring(row[1])
+        attempted[uid] = attempted[uid] or {}
+        if tonumber(row[3]) == 1 then
+            attempted[uid][tostring(row[2])] = true
+        end
+        row = stmt:step()
+    end
+    stmt:close()
+    local ready = {}
+    stmt = db:prepare("SELECT chapter_uid, payload FROM underline_cache")
+    row = stmt:reset():step()
+    while row do
+        local uid = tostring(row[1])
+        local items = json.decode(row[2] or "[]") or {}
+        local have = attempted[uid] or {}
+        local complete = true
+        for _, item in ipairs(items) do
+            local range = tostring(item.range or "")
+            if range ~= "" and not have[range] then
+                complete = false
+                break
+            end
+        end
+        if complete then ready[uid] = true end
         row = stmt:step()
     end
     stmt:close(); self:release(db)
-    return set
+    return ready
 end
 
 return Database

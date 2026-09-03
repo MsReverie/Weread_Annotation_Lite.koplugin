@@ -43,7 +43,7 @@ local function prefetch(catalog, cached, window_size)
         },
         database = {
             listChapters = function() return catalog end,
-            cachedChapterSet = function() return cached_set end,
+            readyChapterSet = function() return cached_set end,
         },
     })
 end
@@ -77,9 +77,59 @@ assert_eq(uids(window), "6,7,8,9,10", "lookahead from chapter 5: " .. tostring(r
 window, reason = p:planWindow("file", "6")
 assert_eq(uids(window), "6,7,8,9,10", "second window at chapter 6: " .. tostring(reason))
 
--- Current chapter is a hole even when the next 1-3 chapters are already cached.
 p = prefetch(catalog, { "7", "8", "9" })
 window, reason = p:planWindow("file", "6")
 assert_eq(uids(window), "6,10", "uncached current chapter must be fetched: " .. tostring(reason))
+
+p = prefetch(catalog, {})
+window, reason = p:planWindow("file", "1")
+assert_eq(uids(window), "1,2,3,4,5", "unlocated current chapter must enter the window: " .. tostring(reason))
+
+p = prefetch(catalog, { "1", "2", "3", "4", "5", "6", "7", "8", "9", "10" })
+window, reason = p:planWindow("file", "3")
+assert_eq(window, nil, "all cached")
+assert_eq(reason, "already-cached", "all cached → already-cached")
+
+p = prefetch(catalog, { "8", "9", "10" })
+window, reason = p:planWindow("file", "10")
+assert_eq(window, nil, "at end of book")
+assert_eq(reason, "end-of-book", "at end of book → end-of-book")
+
+p = prefetch(catalog, { "1", "2", "3", "4", "5" })
+window, reason = p:planWindow("file", "99")
+assert_eq(window, nil, "unknown uid → nil")
+assert_eq(reason, "unknown-chapter", "unknown uid → unknown-chapter")
+
+window, reason = p:planWindow("file", "99", { force = true })
+assert_eq(uids(window), "1,2,3,4,5", "force with unknown uid → start from 1")
+
+p = prefetch({}, {})
+window, reason = p:planWindow("file", "1")
+assert_eq(window, nil, "empty catalog → nil")
+assert_eq(reason, "no-catalog", "empty catalog → no-catalog")
+
+p = prefetch(chapters(3), { "1" }, 2)
+window, reason = p:planWindow("file", "1")
+assert_eq(uids(window), "2,3", "window fits within remaining chapters")
+
+p = prefetch(chapters(5), { "1" }, 1)
+window, reason = p:planWindow("file", "1")
+assert_eq(uids(window), "2", "window size 1")
+
+window, reason = p:planWindow("file", "5")
+assert_eq(window, nil, "last chapter with window 1")
+assert_eq(reason, "end-of-book", "last chapter → end-of-book")
+
+p = prefetch(catalog, { "2", "3", "4" }, 5)
+window, reason = p:planWindow("file", "1")
+assert_eq(uids(window), "1,5", "hole at current forces fetch starting from hole")
+
+p = prefetch(catalog, { "1", "2", "4", "5" }, 5)
+window, reason = p:planWindow("file", "3")
+assert_eq(uids(window), "3", "hole in middle fetches just the hole")
+
+p = prefetch(catalog, {}, 10)
+window, reason = p:planWindow("file", "1")
+assert_eq(uids(window), "1,2,3,4,5,6,7,8,9,10", "window larger than catalog")
 
 print("ok")

@@ -18,7 +18,7 @@ end
 
 function Settings:new()
     local obj = setmetatable({}, self)
-    obj.data_dir = DataStorage:getFullDataDir() .. "/WereadAnnotationLite"
+    obj.data_dir = DataStorage:getFullDataDir() .. "/wereadannotationlite"
     obj.file = LuaSettings:open(
         DataStorage:getSettingsDir() .. "/wereadannotationlite.lua"
     )
@@ -28,6 +28,7 @@ function Settings:new()
             local value = legacy:readSetting(key)
             if value ~= nil then obj.file:saveSetting(key, value) end
         end
+        if legacy.close then legacy:close() end
         obj.file:flush()
     end
     if drop_web_session(obj.file) then
