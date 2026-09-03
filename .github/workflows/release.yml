@@ -1,0 +1,82 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package-and-release:
+    name: Package plugin
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read plugin version
+        id: version
+        run: |
+          set -euo pipefail
+          current="$(sed -nE 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' _meta.lua | head -n 1)"
+          if [[ ! "$current" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "error: _meta.lua version must use X.Y.Z format (got: ${current:-missing})" >&2
+            exit 1
+          fi
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "tag=v$current" >> "$GITHUB_OUTPUT"
+          echo "archive=dist/Weread_Annotation_Lite.koplugin.v${current}.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Verify git tag matches _meta.lua
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          if [[ "${{ github.ref_name }}" != "${{ steps.version.outputs.tag }}" ]]; then
+            echo "error: tag ${{ github.ref_name }} does not match _meta.lua ${{ steps.version.outputs.tag }}" >&2
+            exit 1
+          fi
+
+      - name: Build plugin package
+        run: bash scripts/package_release.sh "${{ steps.version.outputs.current }}"
+
+      - name: Verify package contents
+        run: |
+          set -euo pipefail
+          archive="${{ steps.version.outputs.archive }}"
+          unzip -Z1 "$archive" | grep -qx "Weread_Annotation_Lite.koplugin/main.lua"
+          unzip -Z1 "$archive" | grep -qx "Weread_Annotation_Lite.koplugin/_meta.lua"
+          unzip -Z1 "$archive" | grep -qx "Weread_Annotation_Lite.koplugin/lib/ota.lua"
+          if unzip -Z1 "$archive" | grep -Eq 'Weread_Annotation_Lite\.koplugin/(spec|\.github|scripts)/'; then
+            echo "error: development-only files were included in the release package" >&2
+            exit 1
+          fi
+          staged_version="$(unzip -p "$archive" Weread_Annotation_Lite.koplugin/_meta.lua \
+            | sed -nE 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' | head -n 1)"
+          if [[ "$staged_version" != "${{ steps.version.outputs.current }}" ]]; then
+            echo "error: packaged _meta.lua version $staged_version != ${{ steps.version.outputs.current }}" >&2
+            exit 1
+          fi
+
+      - name: Upload plugin package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Weread_Annotation_Lite.koplugin.v${{ steps.version.outputs.current }}
+          path: ${{ steps.version.outputs.archive }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            "${{ steps.version.outputs.archive }}" \
+            --title "Weread_Annotation_Lite.koplugin v${{ steps.version.outputs.current }}" \
+            --generate-notes

@@ -44,3 +44,4 @@ jobs:
           lua spec/toc_map_spec.lua
           lua spec/toc_matcher_spec.lua
           lua spec/overlay_spec.lua
+          lua spec/ota_spec.lua

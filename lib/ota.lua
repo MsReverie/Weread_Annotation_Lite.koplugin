@@ -113,10 +113,63 @@ function M.current_version(meta_path)
     return M.read_meta_version(text) or "unknown"
 end
 
-local function zip_asset_for_version(name, version)
-    if type(name) ~= "string" or not name:match("%.zip$") then return false end
-    if not name:find("koplugin", 1, true) then return false end
-    return name:find(version, 1, true) ~= nil or name:find("v" .. version, 1, true) ~= nil
+function M.preferred_archive_name(version)
+    return "Weread_Annotation_Lite.koplugin.v" .. tostring(version) .. ".zip"
+end
+
+function M.backup_path(plugin_dir)
+    if type(plugin_dir) ~= "string" or plugin_dir == "" then return nil end
+    return plugin_dir .. ".backup"
+end
+
+function M.validate_staged_plugin(staged, expected_version)
+    if type(staged) ~= "string" or staged == "" then
+        return nil, "Could not find extracted plugin directory"
+    end
+    local main = io.open(staged .. "/main.lua", "r")
+    if not main then
+        return nil, "release package is missing main.lua"
+    end
+    main:close()
+    local version = M.current_version(staged .. "/_meta.lua")
+    if version == "unknown" then
+        return nil, "release package structure or version is invalid"
+    end
+    if expected_version and version ~= expected_version then
+        return nil, "release package version mismatch"
+    end
+    return true
+end
+
+local function name_has_version(name, version)
+    return name:find(version, 1, true) ~= nil
+        or name:find("v" .. version, 1, true) ~= nil
+end
+
+local function archive_asset_score(name, version)
+    if type(name) ~= "string" or type(version) ~= "string" or version == "" then
+        return 0
+    end
+    local lower = name:lower()
+    if not lower:match("%.zip$") or lower:find("sha256", 1, true) then
+        return 0
+    end
+    if not name_has_version(name, version) then
+        return 0
+    end
+    if lower == M.preferred_archive_name(version):lower() then
+        return 3
+    end
+    if lower == ("wereadannotationlite.koplugin-v" .. version .. ".zip") then
+        return 3
+    end
+    if lower:find("koplugin", 1, true) then
+        return 2
+    end
+    if lower:find("weread_annotation_lite", 1, true) then
+        return 1
+    end
+    return 0
 end
 
 function M.parse_release(data)
@@ -128,12 +181,13 @@ function M.parse_release(data)
         return nil, "invalid release tag"
     end
     local version = tag:match("^v?(.*)$")
-    local archive_url, archive_size
+    local archive_url, archive_size, best_score
     for _, asset in ipairs(data.assets or {}) do
-        if zip_asset_for_version(asset.name, version) then
+        local score = archive_asset_score(asset.name, version)
+        if score > 0 and (not best_score or score > best_score) then
+            best_score = score
             archive_url = asset.browser_download_url
             archive_size = tonumber(asset.size)
-            break
         end
     end
     if type(archive_url) ~= "string" or archive_url == "" then
@@ -182,9 +236,8 @@ function M.candidate_urls(url)
 end
 
 function M.cleanup_backup(plugin)
-    local dir = M.plugin_dir(plugin)
-    if not dir then return end
-    local leftover = dir .. ".backup"
+    local leftover = M.backup_path(M.plugin_dir(plugin))
+    if not leftover then return end
     local ok_lfs, lfs = pcall(require, "libs/libkoreader-lfs")
     if ok_lfs and lfs and not lfs.attributes(leftover, "mode") then
         return
@@ -278,14 +331,14 @@ local function find_extracted_plugin(stage)
     return nil
 end
 
-function M.apply_release(plugin, zip_path, tmp)
+function M.apply_release(plugin, zip_path, tmp, expected_version)
     local FFIUtil = require("ffi/util")
     local util = require("util")
     local Archiver = require("ffi/archiver")
     local target = M.plugin_dir(plugin)
     if not target then return nil, "plugin directory unavailable" end
 
-    local bak = join(FFIUtil, tmp, "backup", M.PLUGIN_DIRNAME)
+    local bak = M.backup_path(target)
     local extract_root = join(FFIUtil, tmp, "extract")
     util.makePath(extract_root)
     local arc = Archiver.Reader:new()
@@ -294,7 +347,12 @@ function M.apply_release(plugin, zip_path, tmp)
         return nil, "Failed to open archive"
     end
     for entry in arc:iterate() do
-        if M.path_is_safe(entry.path) and not M.is_excluded(entry.path) then
+        if not M.path_is_safe(entry.path) then
+            arc:close()
+            return nil, "unsafe path in release archive"
+        end
+        if (not entry.mode or entry.mode == "file")
+            and not M.is_excluded(entry.path) then
             local rel = M.normalize_zip_path(entry.path)
             if rel ~= "" then
                 local dest = join(FFIUtil, extract_root, rel)
@@ -307,20 +365,18 @@ function M.apply_release(plugin, zip_path, tmp)
                     return nil, "Failed to extract: " .. tostring(entry.path)
                 end
             end
-        elseif not M.path_is_safe(entry.path) then
-            arc:close()
-            return nil, "unsafe path in release archive"
         end
     end
     arc:close()
 
     local staged = find_extracted_plugin(extract_root)
-    if not staged then
-        return nil, "Could not find extracted plugin directory"
+    local valid, valid_err = M.validate_staged_plugin(staged, expected_version)
+    if not valid then
+        return nil, valid_err
     end
 
     if util.pathExists(target) then
-        if util.pathExists(bak) then FFIUtil.purgeDir(bak) end
+        if bak and util.pathExists(bak) then FFIUtil.purgeDir(bak) end
         local moved, move_err = os.rename(target, bak)
         if not moved then
             return nil, "Failed to backup existing plugin: " .. tostring(move_err)
@@ -328,7 +384,7 @@ function M.apply_release(plugin, zip_path, tmp)
     end
     local installed, install_err = os.rename(staged, target)
     if not installed then
-        os.rename(bak, target)
+        if bak then os.rename(bak, target) end
         return nil, "Failed to install plugin: " .. tostring(install_err)
     end
     return true
@@ -403,7 +459,7 @@ function M.install(plugin, release)
         local tmp = join(FFIUtil, DataStorage:getFullDataDir(), "ota", M.PLUGIN_DIRNAME .. ".update")
         local zip_path = join(FFIUtil, tmp, "update.zip")
         FFIUtil.purgeDir(tmp)
-        util.makePath(join(FFIUtil, tmp, "backup"))
+        util.makePath(tmp)
 
         local download_msg = InfoMessage:new { text = _("Downloading…"), timeout = 120 }
         UIManager:show(download_msg)
@@ -428,7 +484,7 @@ function M.install(plugin, release)
         UIManager:show(extract_msg)
         UIManager:forceRePaint()
         local pcall_ok, ret = pcall(function()
-            local ok, err = M.apply_release(plugin, zip_path, tmp)
+            local ok, err = M.apply_release(plugin, zip_path, tmp, release.version)
             return { success = ok == true, error = err }
         end)
         UIManager:close(extract_msg)
