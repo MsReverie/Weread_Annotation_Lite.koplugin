@@ -501,8 +501,7 @@ function Client.items_for_chapter(items, chapter_uid)
     local uid = tonumber(chapter_uid)
     local out = {}
     for _, item in ipairs(items or {}) do
-        local item_uid = tonumber(item.chapterUid)
-        if not item_uid or item_uid == uid then
+        if uid ~= nil and tonumber(item.chapterUid) == uid then
             out[#out + 1] = item
         end
     end

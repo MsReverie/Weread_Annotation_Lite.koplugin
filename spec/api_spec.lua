@@ -186,9 +186,17 @@ local kept = API.items_for_chapter({
     { chapterUid = 3, range = "1-2", markText = "in chapter" },
     { chapterUid = 9, range = "3-4", markText = "other chapter" },
     { range = "5-6", markText = "unspecified" },
+    { chapterUid = "3", range = "7-8", markText = "string uid" },
 }, 3)
-assert_eq(#kept, 2, "drop items from other chapters")
+assert_eq(#kept, 2, "only items whose chapterUid matches the requested chapter")
 assert_eq(kept[1].range, "1-2")
-assert_eq(kept[2].range, "5-6", "missing chapterUid stays with the requested chapter")
+assert_eq(kept[2].range, "7-8", "numeric and string chapterUid compare equal")
+
+local intro = API.items_for_chapter({
+    { chapterUid = 0, range = "0-1", markText = "intro" },
+    { chapterUid = 1, range = "2-3", markText = "ch1" },
+}, 0)
+assert_eq(#intro, 1, "chapterUid 0 is a real chapter")
+assert_eq(intro[1].range, "0-1")
 
 print("ok")

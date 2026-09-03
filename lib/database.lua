@@ -331,43 +331,19 @@ function Database:thoughtlessSet(file)
     return set
 end
 
--- A chapter is ready when every cached underline has been locate-attempted.
--- Misses count as done; untried rows do not.
-function Database:readyChapterSet(file)
+-- A chapter is done once its underline payload is in underline_cache.
+-- Locate misses do not reopen it.
+function Database:cachedChapterSet(file)
     local db = self:open(file, false)
     if not db then return {} end
-    local attempted = {}
-    local stmt = db:prepare("SELECT chapter_uid, range, locate_attempted FROM annotations")
-    local row = stmt:reset():step()
+    local stmt = db:prepare("SELECT chapter_uid FROM underline_cache")
+    local set, row = {}, stmt:reset():step()
     while row do
-        local uid = tostring(row[1])
-        attempted[uid] = attempted[uid] or {}
-        if tonumber(row[3]) == 1 then
-            attempted[uid][tostring(row[2])] = true
-        end
-        row = stmt:step()
-    end
-    stmt:close()
-    local ready = {}
-    stmt = db:prepare("SELECT chapter_uid, payload FROM underline_cache")
-    row = stmt:reset():step()
-    while row do
-        local uid = tostring(row[1])
-        local items = json.decode(row[2] or "[]") or {}
-        local have = attempted[uid] or {}
-        local complete = true
-        for _, item in ipairs(items) do
-            local range = tostring(item.range or "")
-            if range ~= "" and not have[range] then
-                complete = false
-                break
-            end
-        end
-        if complete then ready[uid] = true end
+        set[tostring(row[1])] = true
         row = stmt:step()
     end
     stmt:close(); self:release(db)
-    return ready
+    return set
 end
 
 return Database

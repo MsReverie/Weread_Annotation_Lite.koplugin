@@ -43,7 +43,7 @@ local function prefetch(catalog, cached, window_size)
         },
         database = {
             listChapters = function() return catalog end,
-            readyChapterSet = function() return cached_set end,
+            cachedChapterSet = function() return cached_set end,
         },
     })
 end
