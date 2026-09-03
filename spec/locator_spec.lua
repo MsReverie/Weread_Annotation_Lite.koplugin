@@ -72,12 +72,19 @@ assert_eq(picked.start, "xp_c", "bounds lo=250 skips xp_b")
 picked, pos = Locator.choose_after(nil, results, 0)
 assert_eq(picked, nil, "nil doc → nil")
 
-local goto_count = 0
+local reader_xp = "xp-reader"
+local goto_log = {}
 local find_text_count = 0
 local find_all_count = 0
 local search_doc = {
-    findText = function()
+    findText = function(_, pattern)
         find_text_count = find_text_count + 1
+        if pattern == "later in the chapter" then
+            return {
+                { start = "xp-early", ["end"] = "xp-early-end" },
+                { start = "xp-far", ["end"] = "xp-far-end" },
+            }
+        end
         return {}
     end,
     findAllText = function(_, pattern)
@@ -90,28 +97,51 @@ local search_doc = {
         end
         return {}
     end,
-    gotoXPointer = function()
-        goto_count = goto_count + 1
+    gotoXPointer = function(_, xp)
+        goto_log[#goto_log + 1] = xp
+        reader_xp = xp
     end,
-    getXPointer = function() return "xp-reader" end,
+    getXPointer = function() return reader_xp end,
     getPosFromXPointer = function(_, xp)
-        local at = { ["xp-early"] = 10, ["xp-far"] = 8000, ["xp-reader"] = 100 }
+        local at = { ["xp-early"] = 10, ["xp-far"] = 8000, ["xp-reader"] = 100, ["xp-ch"] = 100 }
         return at[xp]
     end,
     clearSelection = function() end,
 }
 
 local bounds = { start_pos = 100, end_pos = 9000, start_xp = "xp-ch" }
-local rec, cursor = Locator.locateOne(search_doc, "3", {
+local rec, cursor, from_xp = Locator.locateOne(search_doc, "3", {
     markText = "later in the chapter",
     range = "10-20",
 }, -math.huge, bounds)
 
-assert_eq(find_text_count, 0, "must not use findText")
-assert_true(find_all_count > 0, "must search with findAllText")
-assert_eq(goto_count, 0, "must not gotoXPointer to search")
+assert_true(find_text_count > 0, "chapter window uses findText")
+assert_eq(find_all_count, 0, "chapter window does not scan the whole book")
+assert_eq(goto_log[1], "xp-ch", "search jumps to chapter start")
+assert_eq(goto_log[#goto_log], "xp-reader", "reader xpointer is restored")
 assert_true(rec ~= nil, "far hit inside chapter bounds must locate")
 assert_eq(rec.pos0, "xp-far", "skip the hit before chapter start")
 assert_eq(cursor, 8000)
+assert_eq(from_xp, "xp-far", "next search starts at this hit")
+
+find_text_count, find_all_count = 0, 0
+goto_log = {}
+local pos_only = { start_pos = 100, end_pos = 9000 }
+rec = Locator.locateOne(search_doc, "3", {
+    markText = "later in the chapter",
+    range = "10-20",
+}, -math.huge, pos_only)
+assert_eq(find_text_count, 0, "pos-only bounds do not move the reader")
+assert_true(find_all_count > 0, "pos-only bounds fall back to findAllText")
+assert_true(rec ~= nil, "findAllText still locates inside pos bounds")
+
+find_text_count, find_all_count = 0, 0
+rec, cursor = Locator.locateOne(search_doc, "3", {
+    markText = "later in the chapter",
+    range = "10-20",
+}, -math.huge, nil)
+assert_eq(find_text_count, 0, "no bounds: no findText")
+assert_eq(find_all_count, 0, "no bounds: no findAllText")
+assert_eq(rec, nil, "no bounds: skip locate")
 
 print("ok")

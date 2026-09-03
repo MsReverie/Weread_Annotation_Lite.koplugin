@@ -514,14 +514,15 @@ function Prefetch:startUnderlines(file, binding, window, gen, force)
             return
         end
         local document = self.plugin.ui and self.plugin.ui.document
-        if document then
-            local ok, rec, cursor = pcall(Locator.locateOne, document,
-                job.uid, row, job.cursor, job.bounds)
+        if document and job.bounds then
+            local ok, rec, cursor, from_xp = pcall(Locator.locateOne, document,
+                job.uid, row, job.cursor, job.bounds, job.from_xp)
             if ok then
-                self.plugin.database:markLocateAttempted(job.file, job.uid, row.range)
                 if rec then
+                    self.plugin.database:markLocateAttempted(job.file, job.uid, row.range)
                     job.located[#job.located + 1] = rec
                     job.cursor = cursor
+                    job.from_xp = from_xp
                 end
             else
                 logger.err("Prefetch locate failed:", rec)
@@ -545,6 +546,7 @@ function Prefetch:startUnderlines(file, binding, window, gen, force)
         end
         job.row_i = 1
         job.cursor = -math.huge
+        job.from_xp = nil
         job.bounds = self.plugin.toc_map and self.plugin.toc_map:getChapterBounds(job.uid)
         locate_one()
     end

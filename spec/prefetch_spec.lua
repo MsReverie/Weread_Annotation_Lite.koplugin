@@ -283,7 +283,9 @@ local flow_plugin = {
         end,
     },
     toc_map = {
-        getChapterBounds = function() return nil end,
+        getChapterBounds = function()
+            return { start_pos = 0, end_pos = 1000, start_xp = "xp-ch" }
+        end,
     },
     _local_annotation_overlay = {
         retainChapterRanges = function(_, uid, ranges)
@@ -307,8 +309,8 @@ assert(cache_saved and #cache_saved == 2, "underline API result is cached")
 assert(ensure_calls == 1, "underline rows are ensured before locating")
 assert(locator_calls[1] == "r1" and locator_calls[2] == "r2",
     "all unattempted ranges reach Locator")
-assert(#attempt_ranges == 2 and attempt_ranges[1] == "r1" and attempt_ranges[2] == "r2",
-    "successful and unmatched locations are both marked attempted")
+assert(#attempt_ranges == 1 and attempt_ranges[1] == "r1",
+    "only a successful locate is marked attempted")
 assert(save_calls == 1, "only the matched underline is persisted")
 assert(prune_calls == 1, "remote underline ranges are pruned once")
 assert(retained_ranges and retained_ranges.uid == "chapter-1",
