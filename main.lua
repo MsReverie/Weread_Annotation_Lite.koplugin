@@ -36,6 +36,7 @@ function Plugin:init()
     self._reader_session = 0
     self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
+    require("lib.ota").cleanup_backup(self)
 end
 
 function Plugin:onDispatcherRegisterActions()

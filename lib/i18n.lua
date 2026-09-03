@@ -54,6 +54,18 @@ local zh = {
     ["Unknown account"] = "未知账号",
     ["Weread login successful.\n\nAccount: %1\nOfficial API key: successfully configured"] =
         "微信读书登录成功。\n\n账号：%1\n官方 API 密钥：已成功配置",
+    ["Check for updates"] = "检查更新",
+    ["Checking for updates…"] = "正在检查更新…",
+    ["Downloading…"] = "正在下载…",
+    ["Installing…"] = "正在安装…",
+    ["OTA update canceled."] = "已取消更新。",
+    ["OTA update failed: %1"] = "更新失败：%1",
+    ["Unknown error"] = "未知错误",
+    ["Already up to date (v%1)."] = "已是最新版本（v%1）。",
+    ["A new version of the plugin (%1) is available. Please update!"] = "插件有新版本 %1，是否更新？",
+    ["Install"] = "安装",
+    ["Later"] = "稍后",
+    ["OTA update OK. Restart is required."] = "更新完成，需要重启。",
 }
 
 local function is_zh(lang)

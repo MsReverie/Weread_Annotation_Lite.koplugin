@@ -26,6 +26,7 @@
 - **离线缓存**：划线、想法写入本地库，可离线阅读。
 - **可中断**：预取可随时取消；再次启动会从中断处继续，已缓存内容不重复拉取。
 - **QR 扫码登录**：生成二维码，微信读书 App 扫码后自动写入官方 API Key。
+- **OTA 更新**：工具菜单里可检查 GitHub Release，下载 zip 并覆盖安装，登录和划线数据不受影响。
 
 ---
 
@@ -73,15 +74,16 @@
 | **自动预取划线与想法** | 自动预取划线与想法（默认开）。 |
 | **显示预取提示** | 预取进度提示（默认关）。 |
 | **微信读书扫码登录** | 扫码登录或更换账号。 |
+| **检查更新** | 查询 GitHub 最新 Release，确认后下载 zip 覆盖安装，完成后可重启 KOReader。 |
 | **清除当前书籍数据** | 删除当前书的本地库（绑定、划线、想法、远端章节）。 |
 
 ---
 
 ## 数据存储
 
-- **数据库**：`koreader/data/wereadannotationlite/` 
+- **数据库**：`koreader/data/wereadannotationlite/`
   每本书一个 `.db`，文件名为书籍完整路径 SHA256 的前 16 位十六进制。
-- **设置**：`koreader/settings/wereadannotationlite.lua`  
+- **设置**：`koreader/settings/wereadannotationlite.lua`
   保存 `api_key`、`account` 和偏好。登录过程中的 Cookie 只用于扫码，**不会写入设置文件**。
 - **缓存**：热门划线按章节缓存（含 synckey）；想法按划线 range 缓存。
 

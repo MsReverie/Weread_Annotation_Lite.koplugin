@@ -86,6 +86,12 @@ function M.build(plugin)
             end,
         },
         {
+            text = _("Check for updates"),
+            callback = function()
+                require("lib.ota").check(plugin)
+            end,
+        },
+        {
             text = _("Clear current book data"),
             callback = function()
                 plugin:clearCurrentData()
