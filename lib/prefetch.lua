@@ -13,6 +13,7 @@ function Prefetch:new(plugin)
         plugin = plugin,
         gen = 0,
         last_underline_at = 0,
+        underlines_done = false,
     }, self)
 end
 
@@ -112,6 +113,7 @@ function Prefetch:cancel()
     self._paused = false
     self._turn_token = nil
     self._unknown_chapter_notified = false
+    self.underlines_done = false
     self:_stopBg()
     self:_releaseStandby()
     self:_closeJobDb()
@@ -298,6 +300,7 @@ end
 -- Debounced chapter-boundary check: fetch a 5-chapter batch when any of
 -- the next 1–3 chapters is not locate-ready (and request() is not in cooldown).
 function Prefetch:ensureAhead()
+    if self.underlines_done then return end
     local plugin = self.plugin
     local token = {}
     self._turn_token = token
@@ -330,6 +333,11 @@ function Prefetch:request(opts)
     local plugin = self.plugin
     if not plugin.settings:get("show_annotations", true) then return end
     if not opts.force and not plugin.settings:get("prefetch_thoughts", true) then
+        return
+    end
+    if opts.force then
+        self.underlines_done = false
+    elseif self.underlines_done then
         return
     end
     local file = plugin.ui and plugin.ui.document and plugin.ui.document.file
@@ -383,6 +391,9 @@ function Prefetch:request(opts)
         force = opts.force,
     })
     if not window then
+        if reason == "already-cached" then
+            self.underlines_done = true
+        end
         logger.debug("prefetch plan skip:", reason, "uid=", chapter_uid)
         if opts.notify and reason == "no-catalog" then
             plugin:showInfo(_("Could not load the Weread chapter list."))
