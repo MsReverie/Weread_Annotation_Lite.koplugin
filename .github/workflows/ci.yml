@@ -1,0 +1,46 @@
+name: Lua Tests
+
+on:
+  push:
+    branches:
+      - dev
+      - main
+  pull_request:
+    branches:
+      - dev
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Lua
+        uses: leafo/gh-actions-lua@v10
+        with:
+          luaVersion: "5.1"
+
+      - name: Setup LuaRocks
+        uses: leafo/gh-actions-luarocks@v5
+
+      - name: Install Lua test dependencies
+        run: |
+          luarocks install luasocket
+          luarocks install dkjson
+
+      - name: Run tests
+        shell: bash
+        run: |
+          set -e
+          # Run API tests with KOReader-compatible test shims.
+          lua spec/api_spec.lua
+          lua spec/locator_spec.lua
+          lua spec/prefetch_window_spec.lua
+          lua spec/prefetch_spec.lua
+          lua spec/prefetch_thought_spec.lua
+          lua spec/toc_map_spec.lua
+          lua spec/toc_matcher_spec.lua
+          lua spec/overlay_spec.lua

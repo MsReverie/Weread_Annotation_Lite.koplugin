@@ -1,5 +1,11 @@
+local Blitbuffer = require("ffi/blitbuffer")
+local Size = require("ui/size")
+
 local Overlay = {}
 Overlay.__index = Overlay
+
+local DASH_WIDTH = 12
+local GAP_WIDTH = 8
 
 local function inside(rect, pos, padding)
     if not rect or not pos then return false end
@@ -8,12 +14,27 @@ local function inside(rect, pos, padding)
         and pos.y >= rect.y - padding and pos.y <= rect.y + rect.h + padding
 end
 
+local function hasThoughtContent(items)
+    for _, item in ipairs(items or {}) do
+        if type(item) == "table"
+            and type(item.content) == "string"
+            and item.content:find("%S") then
+            return true
+        end
+    end
+    return false
+end
+
+local function shouldDisplay(record)
+    return not (tonumber(record.fetched) == 1 and not hasThoughtContent(record.items))
+end
+
 function Overlay:new(opts)
     opts = opts or {}
     return setmetatable({
         records = opts.records or {}, enabled = opts.enabled ~= false,
         cache = {}, visible = {}, generation = 1,
-        hit_padding = tonumber(opts.hit_padding) or 3,
+        hit_padding = tonumber(opts.hit_padding) or 5,
     }, self)
 end
 
@@ -52,6 +73,7 @@ function Overlay:updateThought(chapter_uid, range, items)
             and tostring(rec.range) == tostring(range) then
             rec.items = items or {}
             rec.fetched = 1
+            self:invalidate()
             return
         end
     end
@@ -119,16 +141,28 @@ function Overlay:invalidate()
     end
 end
 
--- ReaderView:resetLayout() calls this on every view module after a layout pass.
 function Overlay:resetLayout()
     self:invalidate()
 end
 
-local function draw_boxes(overlay, bb, x, y, boxes)
+local function draw_underline(bb, rect)
+    local x = rect.x
+    local y = rect.y + rect.h - 3
+    local right = rect.x + rect.w
+    local color = Blitbuffer.COLOR_DARK_GRAY
+    local line = Size.line.thick
+    while x < right do
+        local width = math.min(DASH_WIDTH, right - x)
+        bb:paintRect(x, y, width, line, color)
+        x = x + DASH_WIDTH + GAP_WIDTH
+    end
+end
+
+local function draw_boxes(overlay, bb, boxes)
     overlay.visible = {}
     for _, entry in ipairs(boxes) do
         overlay.visible[#overlay.visible + 1] = entry
-        overlay.view:drawHighlightRect(bb, x, y, entry.rect, "underscore", nil, false)
+        draw_underline(bb, entry.rect)
     end
 end
 
@@ -168,7 +202,7 @@ function Overlay:_computeVisible()
     self:_refreshPositions(document)
     local visible = {}
     for _, record in ipairs(self.records) do
-        if record.pos0 and record.pos1 then
+        if shouldDisplay(record) and record.pos0 and record.pos1 then
             local start_pos = record._start_pos
             local end_pos = record._end_pos
             if start_pos and start_pos > bottom then
@@ -217,10 +251,16 @@ function Overlay:paintTo(bb, x, y)
         self._cache_key = cache_key
         self.cache = { [cache_key] = boxes }
     end
-    draw_boxes(self, bb, x, y, boxes)
+    draw_boxes(self, bb, boxes)
 end
 
 function Overlay:hitTest(pos)
+    if not self.enabled or not pos then return end
+    -- PageUpdate/resetLayout wipe the last paint's box list. Don't wait for
+    -- the next blit or the tap falls through to tap_forward and turns the page.
+    if not self.visible or #self.visible == 0 then
+        self.visible = self:_computeVisible()
+    end
     for index = #self.visible, 1, -1 do
         local entry = self.visible[index]
         if inside(entry.rect, pos, self.hit_padding) then return entry.record end

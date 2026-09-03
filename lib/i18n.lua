@@ -5,6 +5,7 @@ local zh = {
     ["Show Weread underlines and thoughts on local books."] = "在本地书籍上显示微信读书划线和想法。",
     ["Enable underlines and thoughts"] = "显示划线与想法",
     ["Fetch underlines"] = "拉取划线",
+    ["Weread Annotation Lite: Fetch underlines"] = "微信读书划线：拉取划线",
     ["Auto prefetch underlines and thoughts"] = "自动预取划线与想法",
     ["Show prefetch notifications"] = "显示预取提示",
     ["Weread QR login"] = "微信读书扫码登录",

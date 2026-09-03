@@ -69,7 +69,7 @@
 | 选项 | 作用 |
 |------|------|
 | **显示划线与想法** | 全局开关。关闭后隐藏划线/想法，并取消预取。 |
-| **拉取划线** | 手动拉取。未绑定则先匹配；已绑定则从当前章强制刷新窗口。 |
+| **拉取划线** | 手动拉取。未绑定则先匹配；已绑定则从当前章强制刷新窗口。可在 **手势** 里绑定同一动作。 |
 | **自动预取划线与想法** | 自动预取划线与想法（默认开）。 |
 | **显示预取提示** | 预取进度提示（默认关）。 |
 | **微信读书扫码登录** | 扫码登录或更换账号。 |
@@ -79,7 +79,7 @@
 
 ## 数据存储
 
-- **数据库**：`koreader/data/WereadAnnotationLite/`  
+- **数据库**：`koreader/data/wereadannotationlite/` 
   每本书一个 `.db`，文件名为书籍完整路径 SHA256 的前 16 位十六进制。
 - **设置**：`koreader/settings/wereadannotationlite.lua`  
   保存 `api_key`、`account` 和偏好。登录过程中的 Cookie 只用于扫码，**不会写入设置文件**。
@@ -90,7 +90,7 @@
 | 键 | 默认 | 含义 |
 |----|------|------|
 | `prefetch_thoughts` | `true` | 自动预取 |
-| `prefetch_notify` | `false` | 预取提示 |
+| `prefetch_notify` | `true` | 预取提示 |
 | `prefetch_batch_size` | `5` | 每批想法条数 |
 | `prefetch_batch_delay` | `0.3` | 批次间隔（秒） |
 | `prefetch_underline_window` | `5` | 一次预取的章节窗口 |

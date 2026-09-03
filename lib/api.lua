@@ -497,16 +497,29 @@ function Client.is_skill_upgrade_required(err)
         or text:find("upgrade_info", 1, true) ~= nil
 end
 
+function Client.items_for_chapter(items, chapter_uid)
+    local uid = tonumber(chapter_uid)
+    local out = {}
+    for _, item in ipairs(items or {}) do
+        local item_uid = tonumber(item.chapterUid)
+        if not item_uid or item_uid == uid then
+            out[#out + 1] = item
+        end
+    end
+    return out
+end
+
 function Client:popular_underlines_sync(book_id, chapter_uid, synckey)
+    local uid = tonumber(chapter_uid) or error("invalid chapter_uid")
     local result = self:gateway("/book/bestbookmarks", {
         bookId = tostring(book_id),
-        chapterUid = tonumber(chapter_uid) or error("invalid chapter_uid"),
+        chapterUid = uid,
         synckey = tonumber(synckey) or 0,
     })
     if type(result) ~= "table" then error("bestbookmarks: gateway returned non-table") end
     local items = type(result.items) == "table" and result.items or {}
     return {
-        items = items,
+        items = Client.items_for_chapter(items, uid),
         synckey = tonumber(result.synckey) or tonumber(synckey) or 0,
         unchanged = tonumber(synckey) and tonumber(synckey) ~= 0
             and tonumber(result.synckey) == tonumber(synckey),
