@@ -34,6 +34,8 @@ function Plugin:init()
     self.prefetch = Prefetch:new(self)
     self.toc_map = TocMap.newInstance(self)
     self._reader_session = 0
+    self._wake_token = 0
+    self._wake_hold = false
     self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
     require("lib.ota").cleanup_backup(self)
@@ -139,12 +141,22 @@ function Plugin:showList(title, items, empty_text)
 end
 
 function Plugin:onChapterMaybeChanged()
+    if self._wake_hold then return end
     if self._thought_open then return end
     if not self.settings:get("show_annotations", true) then return end
     if not self.settings:get("prefetch_thoughts", true) then return end
     if not (self.ui and self.ui.document) then return end
     if self.prefetch.underlines_done then return end
     self.prefetch:ensureAhead()
+end
+
+function Plugin:_prefetchWhenNetworkReady()
+    if not self.api:isOnline() then return end
+    self._wake_hold = false
+    if self._thought_open then return end
+    if not (self.ui and self.ui.document) then return end
+    self.prefetch:resume()
+    self:onChapterMaybeChanged()
 end
 
 function Plugin:prefetchThoughts(silent)
@@ -213,6 +225,8 @@ end
 
 function Plugin:onReaderReady()
     self._reader_session = self._reader_session + 1
+    self._wake_token = (self._wake_token or 0) + 1
+    self._wake_hold = false
     self._thought_open = false
     self.toc_map:clearCache()
     OverlayController.onReaderReady(self)
@@ -245,11 +259,21 @@ function Plugin:onPosUpdate(_pos, pageno)
 end
 
 function Plugin:onNetworkConnected()
-    self:onChapterMaybeChanged()
+    self._wake_token = (self._wake_token or 0) + 1
+    self:_prefetchWhenNetworkReady()
 end
 
 function Plugin:onResume()
-    self:onChapterMaybeChanged()
+    self._wake_token = (self._wake_token or 0) + 1
+    local token = self._wake_token
+    self._wake_hold = true
+    if not self._thought_open and self.prefetch.job then
+        self.prefetch:pause()
+    end
+    UIManager:scheduleIn(2, function()
+        if token ~= self._wake_token then return end
+        self:_prefetchWhenNetworkReady()
+    end)
 end
 
 function Plugin:onDocumentRerendered()
@@ -263,6 +287,8 @@ end
 
 function Plugin:onCloseDocument()
     self._reader_session = self._reader_session + 1
+    self._wake_token = (self._wake_token or 0) + 1
+    self._wake_hold = false
     self._thought_open = false
     self.toc_map:clearCache()
     self.prefetch:cancel()
