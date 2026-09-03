@@ -1,9 +1,9 @@
 local Locator = {}
 
--- findAllText searches the whole document (searchHeight = -1). findText only
--- covers ~2 page heights from the current CRE view, which misses sparse
--- popular highlights and requires gotoXPointer.
-local MAX_SEARCH_HITS = 64
+-- findText covers ~2 page heights from the current CRE Y origin.
+-- findAllText scans from the start of the book and cannot take a start xpointer.
+local MAX_WINDOW_HITS = 64
+local MAX_ALL_HITS = 256
 local FALLBACK_QUOTE_BYTES = 90
 local SEARCH_FLAGS = 0x00FF
 
@@ -57,13 +57,27 @@ function Locator.normalize_hits(results)
     return out
 end
 
+local function clear_selection(document)
+    if document and document.clearSelection then
+        pcall(document.clearSelection, document)
+    end
+end
+
+function Locator.search_window(document, text)
+    if not document or not document.findText or text == nil or text == "" then
+        return {}
+    end
+    local ok, results = pcall(document.findText, document, text, 0, 0, true,
+        0, false, MAX_WINDOW_HITS, SEARCH_FLAGS)
+    clear_selection(document)
+    return ok and Locator.normalize_hits(results) or {}
+end
+
 function Locator.search(document, text)
     if not document or text == nil or text == "" then return {} end
     local ok, results = pcall(document.findAllText, document, text, true, 0,
-        MAX_SEARCH_HITS, false, SEARCH_FLAGS)
-    if document.clearSelection then
-        pcall(document.clearSelection, document)
-    end
+        MAX_ALL_HITS, false, SEARCH_FLAGS)
+    clear_selection(document)
     return ok and Locator.normalize_hits(results) or {}
 end
 
@@ -103,26 +117,52 @@ function Locator.sortedRows(underlines)
     return rows
 end
 
---- Locate one underline via findAllText, then pick the first hit after `cursor`
---- that still sits in `bounds`. Does not move the reader's xpointer.
---- @return record|nil, cursor_pos
-function Locator.locateOne(document, chapter_uid, row, cursor, bounds)
+local function collect(document, text, use_window)
+    local search = use_window and Locator.search_window or Locator.search
+    local results = search(document, text)
+    if #results == 0 and #text > FALLBACK_QUOTE_BYTES then
+        results = search(document, utf8_prefix(text, FALLBACK_QUOTE_BYTES))
+    end
+    return results
+end
+
+--- Locate one underline. With `bounds.start_xp`, walk via findText from that
+--- xpointer (or `from_xp`) and restore the reader. With pos-only bounds, use
+--- findAllText. With no bounds, skip.
+--- @return record|nil, cursor_pos, next_from_xp
+function Locator.locateOne(document, chapter_uid, row, cursor, bounds, from_xp)
     if not document or not row then
-        return nil, cursor
+        return nil, cursor, from_xp
+    end
+    if type(bounds) ~= "table" then
+        return nil, cursor, from_xp
     end
     local text = quote(row)
     if text == "" then
-        return nil, cursor
+        return nil, cursor, from_xp
     end
 
-    local results = Locator.search(document, text)
-    if #results == 0 and #text > FALLBACK_QUOTE_BYTES then
-        results = Locator.search(document, utf8_prefix(text, FALLBACK_QUOTE_BYTES))
+    local results
+    local target_xp = from_xp or bounds.start_xp
+    if target_xp and document.gotoXPointer then
+        local ok_save, saved = pcall(document.getXPointer, document)
+        local ok_goto = pcall(document.gotoXPointer, document, target_xp)
+        if ok_goto then
+            results = collect(document, text, true)
+        else
+            results = {}
+        end
+        if ok_save and saved then
+            pcall(document.gotoXPointer, document, saved)
+        end
+        clear_selection(document)
+    else
+        results = collect(document, text, false)
     end
 
     local result, result_position = Locator.choose_after(document, results, cursor, bounds)
     if not result then
-        return nil, cursor
+        return nil, cursor, from_xp
     end
     return {
         chapter_uid = tostring(chapter_uid),
@@ -131,7 +171,7 @@ function Locator.locateOne(document, chapter_uid, row, cursor, bounds)
         pos0 = result.start,
         pos1 = result["end"],
         items = {},
-    }, result_position
+    }, result_position, result.start
 end
 
 return Locator

@@ -90,6 +90,10 @@ local gap_map = TocMap.match(gap_weread, gap_toc)
 assert_eq(gap_map["a"], 1, "gap: first chapter matched")
 assert_eq(gap_map["x"], nil, "gap: unknown chapter remains unmatched")
 assert_eq(gap_map["b"], 3, "gap: later known chapter still matches")
+local gap_bounds = TocMap.bounds(gap_weread, gap_toc, gap_map)
+assert_eq(gap_bounds["x"].start_pos, 50, "unmatched hole starts at next TOC after left anchor")
+assert_eq(gap_bounds["x"].end_pos, 100, "unmatched hole ends at right anchor")
+assert_eq(gap_bounds["x"].start_xp, "extra", "unmatched hole can search from the in-between TOC")
 
 -- ── match – unrelated titles must remain unmatched ──────────────────────────
 

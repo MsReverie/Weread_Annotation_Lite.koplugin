@@ -12,6 +12,7 @@ local Matcher = {}
 
 local FUZZY_THRESHOLD = 0.78
 local FUZZY_MARGIN = 0.10
+local FILL_THRESHOLD = 0.50
 
 local function strip_ascii_punctuation(text)
     return text:gsub("[%.%,!%?;:%-%_/%\\%(%)%[%]{}]", "")
@@ -215,6 +216,44 @@ function Matcher.find_candidate(weread_title, toc_items, last)
     return best
 end
 
+local function fill_holes(map, weread_chapters, toc_items)
+    local anchors = {}
+    for i, chapter in ipairs(weread_chapters or {}) do
+        local uid = tostring(chapter.chapterUid or "")
+        if uid ~= "" and map[uid] then
+            anchors[#anchors + 1] = { weread_i = i, toc_i = map[uid] }
+        end
+    end
+    for a = 1, math.max(0, #anchors - 1) do
+        local left, right = anchors[a], anchors[a + 1]
+        local holes = {}
+        for i = left.weread_i + 1, right.weread_i - 1 do
+            local chapter = weread_chapters[i]
+            local uid = tostring(chapter.chapterUid or "")
+            if uid ~= "" and not map[uid] then
+                holes[#holes + 1] = chapter
+            end
+        end
+        local span = right.toc_i - left.toc_i - 1
+        if #holes > 0 and #holes == span then
+            local ok, proposed = true, {}
+            for k, hole in ipairs(holes) do
+                local toc_item = toc_items[left.toc_i + k]
+                if not toc_item or Matcher.similarity(hole.title, toc_item.title) < FILL_THRESHOLD then
+                    ok = false
+                    break
+                end
+                proposed[k] = left.toc_i + k
+            end
+            if ok then
+                for k, hole in ipairs(holes) do
+                    map[tostring(hole.chapterUid)] = proposed[k]
+                end
+            end
+        end
+    end
+end
+
 function Matcher.match(weread_chapters, toc_items)
     local map, meta = {}, {}
     local last = 0
@@ -229,10 +268,12 @@ function Matcher.match(weread_chapters, toc_items)
             end
         end
     end
+    fill_holes(map, weread_chapters, toc_items)
     return map, meta
 end
 
 Matcher.FUZZY_THRESHOLD = FUZZY_THRESHOLD
 Matcher.FUZZY_MARGIN = FUZZY_MARGIN
+Matcher.FILL_THRESHOLD = FILL_THRESHOLD
 
 return Matcher

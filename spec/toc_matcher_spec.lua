@@ -54,4 +54,48 @@ assert_eq(map["1"], 1, "first chapter matches after normalization")
 assert_eq(map["x"], nil, "unknown chapter remains unmatched")
 assert_eq(map["2"], 3, "later known chapter still matches")
 
+-- Anchor-to-anchor fill: same hole count and similar titles.
+local filled = Matcher.match({
+    { chapterUid = "1", title = "第一章" },
+    { chapterUid = "a", title = "插曲：黎明" },
+    { chapterUid = "b", title = "插曲：黄昏" },
+    { chapterUid = "2", title = "第二章" },
+}, {
+    { title = "第1章" },
+    { title = "插曲黎明" },
+    { title = "插曲黄昏" },
+    { title = "第2章" },
+})
+assert_eq(filled["1"], 1, "fill keeps first anchor")
+assert_eq(filled["a"], 2, "fill pairs first hole")
+assert_eq(filled["b"], 3, "fill pairs second hole")
+assert_eq(filled["2"], 4, "fill keeps last anchor")
+
+-- Hole count matches but titles do not: still unmatched.
+local refused = Matcher.match({
+    { chapterUid = "1", title = "第一章" },
+    { chapterUid = "x", title = "神秘章节" },
+    { chapterUid = "2", title = "第二章" },
+}, {
+    { title = "第1章" },
+    { title = "附录说明" },
+    { title = "第2章" },
+})
+assert_eq(refused["1"], 1, "refused fill keeps first anchor")
+assert_eq(refused["x"], nil, "unlike titles are not filled")
+assert_eq(refused["2"], 3, "refused fill keeps last anchor")
+
+-- Unequal hole counts: do not guess.
+local uneven = Matcher.match({
+    { chapterUid = "1", title = "第一章" },
+    { chapterUid = "x", title = "临时标题甲" },
+    { chapterUid = "2", title = "第二章" },
+}, {
+    { title = "第1章" },
+    { title = "插曲黎明" },
+    { title = "多余一节" },
+    { title = "第2章" },
+})
+assert_eq(uneven["x"], nil, "uneven holes stay unmatched")
+
 print("ok")

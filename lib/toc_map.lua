@@ -50,6 +50,33 @@ function TocMap.bounds(weread_chapters, toc_items, matched)
             }
         end
     end
+    local last_matched_toc
+    for i, chapter in ipairs(weread_chapters or {}) do
+        local uid = tostring(chapter.chapterUid or "")
+        if uid ~= "" and matched[uid] then
+            last_matched_toc = matched[uid]
+        elseif uid ~= "" and not out[uid] and last_matched_toc then
+            local next_toc
+            for j = i + 1, #weread_chapters do
+                local nxt = matched[tostring(weread_chapters[j].chapterUid)]
+                if nxt then
+                    next_toc = nxt
+                    break
+                end
+            end
+            if next_toc and next_toc > last_matched_toc + 1 then
+                local start_item = toc_items[last_matched_toc + 1]
+                local end_item = toc_items[next_toc]
+                if start_item and end_item then
+                    out[uid] = {
+                        start_pos = tonumber(start_item.pos) or 0,
+                        end_pos = tonumber(end_item.pos) or math.huge,
+                        start_xp = start_item.xpointer,
+                    }
+                end
+            end
+        end
+    end
     return out
 end
 
