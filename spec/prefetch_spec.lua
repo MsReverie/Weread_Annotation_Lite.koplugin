@@ -173,7 +173,7 @@ local latch_plugin = {
         listChapters = function()
             return { { chapterUid = "1" }, { chapterUid = "2" } }
         end,
-        readyChapterSet = function()
+        cachedChapterSet = function()
             return { ["1"] = true, ["2"] = true }
         end,
     },

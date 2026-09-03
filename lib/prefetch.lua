@@ -194,21 +194,21 @@ function Prefetch:planWindow(file, current_uid, opts)
         return window
     end
 
-    local ready = self.plugin.database:readyChapterSet(file)
-    local start = ready[current_uid] and (idx + 1) or idx
-    local all_ready = true
+    local cached = self.plugin.database:cachedChapterSet(file)
+    local start = cached[current_uid] and (idx + 1) or idx
+    local all_cached = true
     for i = 1, #chapters do
-        if not ready[tostring(chapters[i].chapterUid)] then
-            all_ready = false
+        if not cached[tostring(chapters[i].chapterUid)] then
+            all_cached = false
             break
         end
     end
-    if all_ready then
+    if all_cached then
         return nil, "already-cached"
     end
     local hole = false
     for i = start, math.min(idx + 3, #chapters) do
-        if not ready[tostring(chapters[i].chapterUid)] then
+        if not cached[tostring(chapters[i].chapterUid)] then
             hole = true
             break
         end
@@ -216,19 +216,19 @@ function Prefetch:planWindow(file, current_uid, opts)
     if not hole then
         return nil, idx >= #chapters and "end-of-book" or "ahead-ok"
     end
-    if not ready[current_uid] and idx >= #chapters then
+    if not cached[current_uid] and idx >= #chapters then
         return nil, "end-of-book"
     end
-    if not ready[current_uid] then
+    if not cached[current_uid] then
         local j = idx + 1
-        while j <= #chapters and ready[tostring(chapters[j].chapterUid)] do j = j + 1 end
-        local has_ready_ahead = j > idx + 1
+        while j <= #chapters and cached[tostring(chapters[j].chapterUid)] do j = j + 1 end
+        local has_cached_ahead = j > idx + 1
         local k = idx - 1
-        while k >= 1 and ready[tostring(chapters[k].chapterUid)] do k = k - 1 end
-        local has_ready_before = k < idx - 1
-        if has_ready_ahead and has_ready_before then
+        while k >= 1 and cached[tostring(chapters[k].chapterUid)] do k = k - 1 end
+        local has_cached_before = k < idx - 1
+        if has_cached_ahead and has_cached_before then
             window[#window + 1] = chapters[idx]
-        elseif has_ready_ahead then
+        elseif has_cached_ahead then
             window[#window + 1] = chapters[idx]
             if j <= #chapters then
                 window[#window + 1] = chapters[j]
@@ -236,7 +236,7 @@ function Prefetch:planWindow(file, current_uid, opts)
         else
             for i = idx, #chapters do
                 local uid = tostring(chapters[i].chapterUid)
-                if not ready[uid] then
+                if not cached[uid] then
                     window[#window + 1] = chapters[i]
                     if #window >= window_size then break end
                 end
@@ -245,7 +245,7 @@ function Prefetch:planWindow(file, current_uid, opts)
     else
         for i = start, #chapters do
             local uid = tostring(chapters[i].chapterUid)
-            if not ready[uid] then
+            if not cached[uid] then
                 window[#window + 1] = chapters[i]
                 if #window >= window_size then break end
             end
@@ -298,7 +298,7 @@ function Prefetch:afterChapterTurn(_chapter_uid)
 end
 
 -- Debounced chapter-boundary check: fetch a 5-chapter batch when any of
--- the next 1–3 chapters is not locate-ready (and request() is not in cooldown).
+-- the next 1–3 chapters is uncached (and request() is not in cooldown).
 function Prefetch:ensureAhead()
     if self.underlines_done then return end
     local plugin = self.plugin
