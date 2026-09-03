@@ -56,16 +56,16 @@ local zh = {
         "微信读书登录成功。\n\n账号：%1\n官方 API 密钥：已成功配置",
     ["Check for updates"] = "检查更新",
     ["Checking for updates…"] = "正在检查更新…",
-    ["Downloading update…"] = "正在下载更新…",
-    ["Update check failed:\n%1"] = "检查更新失败：\n%1",
+    ["Downloading…"] = "正在下载…",
+    ["Installing…"] = "正在安装…",
+    ["OTA update canceled."] = "已取消更新。",
+    ["OTA update failed: %1"] = "更新失败：%1",
     ["Unknown error"] = "未知错误",
     ["Already up to date (v%1)."] = "已是最新版本（v%1）。",
-    ["Version %1 is available (installed: %2). Install it?"] = "有新版本 %1（当前：%2）。是否安装？",
+    ["A new version of the plugin (%1) is available. Please update!"] = "插件有新版本 %1，是否更新？",
     ["Install"] = "安装",
     ["Later"] = "稍后",
-    ["Update installation failed:\n%1"] = "安装更新失败：\n%1",
-    ["Updated to %1. Restart KOReader to load it?"] = "已更新到 %1。是否重启 KOReader 以加载？",
-    ["Restart now"] = "立即重启",
+    ["OTA update OK. Restart is required."] = "更新完成，需要重启。",
 }
 
 local function is_zh(lang)
