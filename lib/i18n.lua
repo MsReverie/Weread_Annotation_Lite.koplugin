@@ -54,6 +54,27 @@ local zh = {
     ["Unknown account"] = "未知账号",
     ["Weread login successful.\n\nAccount: %1\nOfficial API key: successfully configured"] =
         "微信读书登录成功。\n\n账号：%1\n官方 API 密钥：已成功配置",
+    ["Check for updates"] = "检查更新",
+    ["Update"] = "更新",
+    ["Update: offline"] = "更新：离线",
+    ["Checking for updates…"] = "正在检查更新…",
+    ["Downloading update…"] = "正在下载更新…",
+    ["Could not download the update."] = "无法下载更新。",
+    ["The downloaded update looks incomplete."] = "下载的更新文件不完整。",
+    ["Could not unpack the update."] = "无法解压更新。",
+    ["The update archive has an unexpected layout."] = "更新压缩包结构不符合预期。",
+    ["Could not find the plugin directory."] = "找不到插件目录。",
+    ["Could not install the update files."] = "无法安装更新文件。",
+    ["Updated to %1. Restart KOReader to load it?"] = "已更新到 %1。是否重启 KOReader 以加载？",
+    ["Restart"] = "重启",
+    ["Later"] = "稍后",
+    ["Please restart KOReader to load the update."] = "请重启 KOReader 以加载更新。",
+    ["Could not check for updates: %1"] = "无法检查更新：%1",
+    ["Could not read the latest release."] = "无法读取最新发行版。",
+    ["Already up to date.\n\nInstalled: %1\nLatest: %2"] = "已是最新版本。\n\n当前：%1\n最新：%2",
+    ["Latest release has no downloadable zip."] = "最新发行版没有可下载的 zip。",
+    ["Version %1 is available (installed: %2). Install it?"] = "有新版本 %1（当前：%2）。是否安装？",
+    ["Install"] = "安装",
 }
 
 local function is_zh(lang)

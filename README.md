@@ -26,6 +26,7 @@
 - **离线缓存**：划线、想法写入本地库，可离线阅读。
 - **可中断**：预取可随时取消；再次启动会从中断处继续，已缓存内容不重复拉取。
 - **QR 扫码登录**：生成二维码，微信读书 App 扫码后自动写入官方 API Key。
+- **OTA 更新**：工具菜单里可检查 GitHub Release，下载 zip 并覆盖安装，登录和划线数据不受影响。
 
 ---
 
@@ -73,6 +74,7 @@
 | **自动预取划线与想法** | 自动预取划线与想法（默认开）。 |
 | **显示预取提示** | 预取进度提示（默认关）。 |
 | **微信读书扫码登录** | 扫码登录或更换账号。 |
+| **检查更新** | 查询 GitHub 最新 Release，确认后下载 zip 覆盖安装，完成后可重启 KOReader。 |
 | **清除当前书籍数据** | 删除当前书的本地库（绑定、划线、想法、远端章节）。 |
 
 ---
@@ -96,6 +98,14 @@
 | `prefetch_underline_window` | `5` | 一次预取的章节窗口 |
 | `prefetch_underline_cooldown` | `30` | 划线预取冷却（秒） |
 | `debug_log` | `false` | 调试日志 |
+
+---
+
+## 更新（OTA）
+
+- 当前版本写在 `_meta.lua` 的 `version` 字段，需与 GitHub Release 的 tag 对应（如 `v0.1.0`）。
+- Release 需附带 zip 资源，顶层目录为插件文件夹（现有 `Weread_Annotation_Lite.koplugin.vX.Y.Z.zip` 即可）。
+- 安装覆盖插件目录内的代码文件；`koreader/settings` 与 `koreader/data` 里的登录和划线缓存不会被删。
 
 ---
 
