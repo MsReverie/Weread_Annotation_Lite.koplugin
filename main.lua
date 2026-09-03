@@ -101,6 +101,7 @@ function Plugin:clearCurrentData()
         text = _("Clear Weread annotations for this book?"),
         ok_callback = function()
             self.database:clear(file)
+            self.prefetch:cancel()
             if self._local_annotation_overlay then
                 self._local_annotation_overlay:setRecords({})
             end
@@ -142,6 +143,7 @@ function Plugin:onChapterMaybeChanged()
     if not self.settings:get("show_annotations", true) then return end
     if not self.settings:get("prefetch_thoughts", true) then return end
     if not (self.ui and self.ui.document) then return end
+    if self.prefetch.underlines_done then return end
     self.prefetch:ensureAhead()
 end
 

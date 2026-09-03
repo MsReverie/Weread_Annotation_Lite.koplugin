@@ -149,6 +149,55 @@ callback()
 assert(requested == nil, "open thought popup defers ensureAhead")
 assert(ahead._followup == true, "open thought popup marks followup")
 
+requested = nil
+ahead_plugin._thought_open = false
+ahead.underlines_done = true
+local scheduled_n = #scheduled
+ahead:ensureAhead()
+assert(#scheduled == scheduled_n, "done underlines skip ensureAhead")
+ahead.underlines_done = false
+
+-- ── whole-book underline latch ───────────────────────────────────────────────
+local latch_plugin = {
+    settings = {
+        get = function(_, key, default)
+            if key == "show_annotations" or key == "prefetch_thoughts" then
+                return true
+            end
+            return default
+        end,
+    },
+    ui = { document = { file = current_file } },
+    database = {
+        getBinding = function() return { book_id = "book-1" } end,
+        listChapters = function()
+            return { { chapterUid = "1" }, { chapterUid = "2" } }
+        end,
+        readyChapterSet = function()
+            return { ["1"] = true, ["2"] = true }
+        end,
+    },
+    api = { isOnline = function() return true end },
+    toc_map = { currentWereadChapterUid = function() return "1" end },
+}
+local latched = Prefetch:new(latch_plugin)
+latched:request({ chapter_uid = "1" })
+assert(latched.underlines_done == true, "already-cached marks underlines done")
+
+local plan_calls = 0
+local orig_plan = Prefetch.planWindow
+function Prefetch.planWindow(self, ...)
+    plan_calls = plan_calls + 1
+    return orig_plan(self, ...)
+end
+latched:request({ chapter_uid = "1" })
+assert(plan_calls == 0, "done underlines skip later request")
+latched.startUnderlines = function() end
+latched:request({ force = true, chapter_uid = "1" })
+Prefetch.planWindow = orig_plan
+assert(latched.underlines_done == false, "force clears the underline latch")
+assert(plan_calls == 1, "force still plans a window")
+
 -- ── _bg fallback path ────────────────────────────────────────────────────────
 local bg = Prefetch:new({ _reader_session = 1 })
 local bg_result
