@@ -88,21 +88,9 @@ assert_eq(
     "release package is missing"
 )
 
-local ok_staged, staged_err = OTA.validate_staged_plugin("spec/fixtures/ota_ok", "0.2.0")
-assert_eq(staged_err, nil)
-assert_eq(ok_staged, true)
-
-assert_eq(
-    select(2, OTA.validate_staged_plugin("spec/fixtures/ota_mismatch", "0.2.0")),
-    "release package version mismatch"
-)
-assert_eq(
-    select(2, OTA.validate_staged_plugin("spec/fixtures/ota_nomain", "0.2.0")),
-    "release package is missing main.lua"
-)
-assert_eq(
-    select(1, OTA.validate_staged_plugin(nil, "0.2.0")),
-    nil
-)
+assert_eq(select(1, OTA.validate_staged_plugin(".", "0.2.0")), true)
+assert_eq(select(2, OTA.validate_staged_plugin(".", "9.9.9")), "release package version mismatch")
+assert_eq(select(2, OTA.validate_staged_plugin("spec", "0.2.0")), "release package is missing main.lua")
+assert_eq(select(1, OTA.validate_staged_plugin(nil, "0.2.0")), nil)
 
 print("ota_spec ok")
