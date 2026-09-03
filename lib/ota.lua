@@ -1,407 +1,506 @@
 --[[--
-OTA updates from GitHub Releases.
-
-Pure helpers (version / asset / zip layout) have no KOReader requires so they
-run under the bare Lua spec harness. Network, unzip, and UI are required lazily.
-
-Release zips are expected to wrap files in a single top-level folder
-(Weread_Annotation_Lite.koplugin/ or wereadannotationlite.koplugin/).
-Installation copies that folder's contents onto the live plugin directory,
-so login/settings/data outside the plugin tree are left alone.
+GitHub Release self-updater, following weread.koplugin's updater:
+Archiver extract, directory rename + backup, GitHub mirrors, Trapper.
 
 @module lib.ota
 --]]
 
+
 local M = {}
 
 M.REPO = "MsReverie/Weread_Annotation_Lite.koplugin"
-M.API_LATEST = "https://api.github.com/repos/" .. M.REPO .. "/releases/latest"
-M.RELEASES_PAGE = "https://github.com/" .. M.REPO .. "/releases"
-M.USER_AGENT = "KOReader-WereadAnnotationLite"
-M.MIN_ZIP_SIZE = 4096
+M.API_URL = "https://api.github.com/repos/" .. M.REPO .. "/releases/latest"
+M.RELEASE_PREFIX = "https://github.com/" .. M.REPO .. "/releases/download/"
+M.GITHUB_MIRRORS = {
+    "https://gh-proxy.com/",
+    "https://ghfast.top/",
+    "https://ghproxy.net/",
+}
+M.MAX_PACKAGE_BYTES = 10 * 1024 * 1024
+M.USER_AGENT = "KOReader-WereadAnnotationLite-Updater/1.0"
+M.ZIP_ROOTS = {
+    "Weread_Annotation_Lite.koplugin/",
+    "wereadannotationlite.koplugin/",
+}
 
-function M.parseVersion(v)
-    local parts = {}
-    for part in tostring(v):gsub("^v", ""):gmatch("([^%.]+)") do
-        parts[#parts + 1] = tonumber(part:match("^(%d+)")) or 0
-    end
-    return parts
+local function trim(value)
+    return tostring(value or ""):match("^%s*(.-)%s*$")
 end
 
-function M.isNewer(candidate, installed)
-    local a, b = M.parseVersion(candidate), M.parseVersion(installed)
-    for i = 1, math.max(#a, #b) do
-        local x, y = a[i] or 0, b[i] or 0
-        if x > y then return true end
-        if x < y then return false end
-    end
-    return false
+local function plugin_dir_from_source()
+    local source = debug.getinfo(1, "S").source or ""
+    return source:match("^@?(.+)/lib/[^/]+$")
 end
 
-function M.readMetaVersion(text)
+function M.plugin_dir(plugin)
+    if plugin and type(plugin.path) == "string" and plugin.path ~= "" then
+        return plugin.path
+    end
+    return plugin_dir_from_source()
+end
+
+function M.compare_versions(left, right)
+    local function parts(version)
+        local major, minor, patch = tostring(version or ""):match("^v?(%d+)%.(%d+)%.(%d+)$")
+        if not major then return nil end
+        return { tonumber(major), tonumber(minor), tonumber(patch) }
+    end
+    local a, b = parts(left), parts(right)
+    if not a or not b then return nil end
+    for i = 1, 3 do
+        if a[i] < b[i] then return -1 end
+        if a[i] > b[i] then return 1 end
+    end
+    return 0
+end
+
+function M.read_meta_version(text)
     if type(text) ~= "string" then return nil end
     return text:match('version%s*=%s*"([^"]+)"')
         or text:match("version%s*=%s*'([^']+)'")
 end
 
-function M.getInstalledVersion(meta_path)
-    meta_path = meta_path or (M.pluginPath() .. "/_meta.lua")
-    local f = io.open(meta_path, "r")
-    if not f then return "unknown" end
-    local text = f:read("*a")
-    f:close()
-    return M.readMetaVersion(text) or "unknown"
+function M.current_version(meta_path)
+    meta_path = meta_path or ((plugin_dir_from_source() or ".") .. "/_meta.lua")
+    local file = io.open(meta_path, "r")
+    if not file then return "unknown" end
+    local text = file:read("*a")
+    file:close()
+    return M.read_meta_version(text) or "unknown"
 end
 
-function M.selectAsset(release)
-    for _, asset in ipairs(release and release.assets or {}) do
-        local name = asset.name or ""
-        if name:match("%.zip$") and asset.browser_download_url then
-            return asset.browser_download_url, name
-        end
+function M.candidate_urls(url, prefer_proxy)
+    local allowed = url == M.API_URL
+        or (type(url) == "string" and url:sub(1, #M.RELEASE_PREFIX) == M.RELEASE_PREFIX)
+    if not allowed then return {} end
+    local direct, proxies = { url }, {}
+    for _, prefix in ipairs(M.GITHUB_MIRRORS) do
+        proxies[#proxies + 1] = prefix .. url
     end
-    if release and release.zipball_url then
-        return release.zipball_url, "source.zip"
-    end
-    return nil, nil
+    local first = prefer_proxy and proxies or direct
+    local second = prefer_proxy and direct or proxies
+    local out = {}
+    for _, candidate in ipairs(first) do out[#out + 1] = candidate end
+    for _, candidate in ipairs(second) do out[#out + 1] = candidate end
+    return out
 end
 
-function M.releaseTag(release)
-    if type(release) ~= "table" then return nil end
-    local tag = release.tag_name or release.name
-    if type(tag) ~= "string" or tag == "" then return nil end
-    return tag
-end
-
-function M.pluginPath()
-    local src = debug.getinfo(1, "S").source or ""
-    if src:sub(1, 1) == "@" then
-        src = src:sub(2)
-    end
-    local dir = src:match("(.+)/lib/ota%.lua$")
-    if dir then return dir end
-    local DataStorage = require("datastorage")
-    return DataStorage:getDataDir() .. "/plugins/wereadannotationlite.koplugin"
-end
-
-function M.cacheDir()
-    local DataStorage = require("datastorage")
-    return DataStorage:getSettingsDir() .. "/wereadannotationlite_ota"
-end
-
-local function file_size(path)
-    local lfs = require("libs/libkoreader-lfs")
-    local attr = lfs.attributes(path)
-    return (attr and attr.size) or 0
-end
-
-local function is_zip(path)
-    local f = io.open(path, "rb")
-    if not f then return false end
-    local sig = f:read(2)
-    f:close()
-    return sig == "PK"
-end
-
-local function ensure_dir(path)
-    local lfs = require("libs/libkoreader-lfs")
-    if lfs.attributes(path, "mode") ~= "directory" then
-        lfs.mkdir(path)
-    end
-end
-
-local function list_dir(path)
-    local lfs = require("libs/libkoreader-lfs")
-    local names = {}
-    for name in lfs.dir(path) do
-        if name ~= "." and name ~= ".." then
-            names[#names + 1] = name
-        end
-    end
-    table.sort(names)
-    return names
-end
-
-function M.payloadDirectory(extract_dir)
-    local lfs = require("libs/libkoreader-lfs")
-    if lfs.attributes(extract_dir .. "/main.lua", "mode") == "file"
-        or lfs.attributes(extract_dir .. "/_meta.lua", "mode") == "file" then
-        return extract_dir
-    end
-    local names = list_dir(extract_dir)
-    local dirs = {}
-    for _, name in ipairs(names) do
-        local full = extract_dir .. "/" .. name
-        if lfs.attributes(full, "mode") == "directory" then
-            dirs[#dirs + 1] = full
-        end
-    end
-    if #dirs == 1 and (
-        lfs.attributes(dirs[1] .. "/main.lua", "mode") == "file"
-        or lfs.attributes(dirs[1] .. "/_meta.lua", "mode") == "file"
-    ) then
-        return dirs[1]
-    end
-    return nil
-end
-
-local function copy_file(src, dest)
-    local inf = io.open(src, "rb")
-    if not inf then return false end
-    local outf = io.open(dest, "wb")
-    if not outf then
-        inf:close()
+local function zip_asset_for_version(name, version)
+    if type(name) ~= "string" or not name:match("%.zip$") then return false end
+    if name:match("%.sha256$") then return false end
+    if not name:find(version, 1, true) and not name:find("v" .. version, 1, true) then
         return false
     end
-    while true do
-        local chunk = inf:read(65536)
-        if not chunk then break end
-        outf:write(chunk)
-    end
-    inf:close()
-    outf:close()
-    return true
+    return name:find("koplugin", 1, true) ~= nil
 end
 
-local function copy_tree(src, dest)
-    local lfs = require("libs/libkoreader-lfs")
-    ensure_dir(dest)
-    for _, name in ipairs(list_dir(src)) do
-        local from, to = src .. "/" .. name, dest .. "/" .. name
-        local mode = lfs.attributes(from, "mode")
-        if mode == "directory" then
-            if not copy_tree(from, to) then return false end
-        elseif mode == "file" then
-            if not copy_file(from, to) then return false end
+local function normalize_notes(notes)
+    notes = trim(notes)
+    if notes == "" then return nil end
+    notes = notes:gsub("\r\n", "\n"):gsub("\r", "\n")
+    notes = notes:gsub("^#+%s*", ""):gsub("\n#+%s*", "\n")
+    notes = notes:gsub("%*%*(.-)%*%*", "%1")
+    notes = notes:gsub("`(.-)`", "%1")
+    if #notes > 1600 then notes = notes:sub(1, 1597) .. "..." end
+    return notes
+end
+
+function M.parse_release(data)
+    if type(data) ~= "table" or data.draft == true or data.prerelease == true then
+        return nil, "invalid release metadata"
+    end
+    local version = type(data.tag_name) == "string"
+        and data.tag_name:match("^v(%d+%.%d+%.%d+)$") or nil
+    if not version then return nil, "invalid release tag" end
+
+    local archive_url, archive_size, digest, checksum_url
+    for _, asset in ipairs(data.assets or {}) do
+        local name = asset.name or ""
+        if zip_asset_for_version(name, version) then
+            archive_url = asset.browser_download_url
+            archive_size = tonumber(asset.size)
+            local raw = tostring(asset.digest or "")
+            digest = raw:match("^sha256:([0-9a-fA-F]+)$") or raw:match("^([0-9a-fA-F][0-9a-fA-F]+)$")
+        elseif name:match("%.sha256$") and name:find(version, 1, true) then
+            checksum_url = asset.browser_download_url
         end
     end
-    return true
+    local function valid_url(url)
+        return type(url) == "string" and url:sub(1, #M.RELEASE_PREFIX) == M.RELEASE_PREFIX
+    end
+    if not valid_url(archive_url) then
+        return nil, "release package is missing"
+    end
+    if archive_size and archive_size > M.MAX_PACKAGE_BYTES then
+        return nil, "release package is too large"
+    end
+    return {
+        version = version,
+        archive_url = archive_url,
+        checksum_url = valid_url(checksum_url) and checksum_url or nil,
+        digest = digest and digest:lower() or nil,
+        archive_size = archive_size,
+        notes = normalize_notes(data.body),
+    }
 end
 
-local function decode_json(text)
-    local ok_rj, rapidjson = pcall(require, "rapidjson")
-    local JSON = ok_rj and rapidjson or require("json")
-    local ok, data = pcall(JSON.decode, text)
-    if ok then return data end
+local function remove_file(path)
+    if path then pcall(os.remove, path) end
+end
+
+local function remove_tree(path)
+    if not path or path == "" then return nil, "invalid directory" end
+    local ok, ffiutil = pcall(require, "ffi/util")
+    if ok and ffiutil and ffiutil.purgeDir then
+        local removed, err = pcall(ffiutil.purgeDir, path)
+        if removed then return true end
+        return nil, err
+    end
+    return nil, "directory cleanup unavailable"
+end
+
+local function make_path(path)
+    local ok, util = pcall(require, "util")
+    if ok and util and util.makePath then
+        return util.makePath(path)
+    end
+    local lfs = require("libs/libkoreader-lfs")
+    if lfs.attributes(path, "mode") == "directory" then return true end
+    return lfs.mkdir(path)
+end
+
+local function zip_root_ok(path)
+    for _, root in ipairs(M.ZIP_ROOTS) do
+        if path:sub(1, #root) == root then return true end
+    end
+    return false
+end
+
+local function unpack_release(archive, stage)
+    local Archiver = require("ffi/archiver")
+    local reader = Archiver.Reader:new()
+    if not reader:open(archive) then
+        reader:close()
+        return nil, reader.err or "could not open release archive"
+    end
+    local ok, err = true, nil
+    for entry in reader:iterate() do
+        local path = entry.path
+        local safe = type(path) == "string"
+            and path ~= ""
+            and path:sub(1, 1) ~= "/"
+            and path:find("\\", 1, true) == nil
+            and zip_root_ok(path)
+            and path:match("^%.%./") == nil
+            and path:match("/%.%./") == nil
+            and path:match("/%.%.$") == nil
+        if not safe then
+            ok, err = nil, "unsafe path in release archive"
+            break
+        end
+        if not reader:extractToPath(path, stage .. "/" .. path) then
+            ok, err = nil, reader.err or "archive extraction failed"
+            break
+        end
+    end
+    if reader.err then ok, err = nil, reader.err end
+    reader:close()
+    return ok, err
+end
+
+local function staged_plugin_dir(stage)
+    local lfs = require("libs/libkoreader-lfs")
+    for _, root in ipairs(M.ZIP_ROOTS) do
+        local dir = stage .. "/" .. root:gsub("/$", "")
+        if lfs.attributes(dir .. "/main.lua", "mode") == "file" then
+            return dir
+        end
+    end
     return nil
 end
 
-local function http_get_body(url, accept)
-    local ltn12 = require("ltn12")
+local function http_get(url, destination, max_bytes)
     local http = require("socket.http")
-    local socketutil = require("socketutil")
-    local body = {}
-    socketutil:set_timeout(15, 60)
-    local ok, code = pcall(function()
-        local _n, status_code = http.request({
-            url = url,
-            method = "GET",
-            headers = {
-                ["User-Agent"] = M.USER_AGENT,
-                ["Accept"] = accept or "application/vnd.github+json",
-            },
-            sink = ltn12.sink.table(body),
-            redirect = true,
-        })
-        return status_code
-    end)
-    pcall(function() socketutil:reset_timeout() end)
-    if not ok then return nil, tostring(code) end
-    local ncode = tonumber(code)
-    if ncode == 200 then
-        return table.concat(body)
-    end
-    local handle = io.popen(string.format(
-        "curl -sL -A %q -H %q %q",
-        M.USER_AGENT,
-        "Accept: " .. (accept or "application/vnd.github+json"),
-        url
-    ))
-    if not handle then return nil, "curl unavailable" end
-    local curl_body = handle:read("*a")
-    handle:close()
-    if curl_body and curl_body ~= "" then
-        return curl_body
-    end
-    return nil, "HTTP " .. tostring(code)
-end
-
-local function download_file(url, dest)
     local ltn12 = require("ltn12")
-    local http = require("socket.http")
+    local socket = require("socket")
     local socketutil = require("socketutil")
-    local f = io.open(dest, "wb")
-    if not f then return false end
-    socketutil:set_timeout(15, 180)
-    local ok, code = pcall(function()
-        local _n, status_code = http.request({
-            url = url,
-            method = "GET",
-            headers = { ["User-Agent"] = M.USER_AGENT },
-            sink = ltn12.sink.file(f),
-            redirect = true,
-        })
-        return status_code
-    end)
-    pcall(function() socketutil:reset_timeout() end)
-    if ok and tonumber(code) == 200 and is_zip(dest) then
-        return true
+    local sink, chunks, limit_error
+    if destination then
+        local file = io.open(destination, "wb")
+        if not file then return nil, "cannot create download file" end
+        local file_sink = ltn12.sink.file(file)
+        local received = 0
+        sink = function(chunk, err)
+            if chunk then
+                if max_bytes and received + #chunk > max_bytes then
+                    limit_error = "download exceeds size limit"
+                    file_sink(nil, limit_error)
+                    return nil, limit_error
+                end
+                received = received + #chunk
+            end
+            return file_sink(chunk, err)
+        end
+        socketutil:set_timeout(socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT)
+    else
+        chunks = {}
+        sink = ltn12.sink.table(chunks)
+        socketutil:set_timeout(socketutil.LARGE_BLOCK_TIMEOUT, socketutil.LARGE_TOTAL_TIMEOUT)
     end
-    pcall(os.remove, dest)
-    local ret = os.execute(string.format("curl -sfL -A %q -o %q %q", M.USER_AGENT, dest, url))
-    if (ret == 0 or ret == true) and is_zip(dest) then
-        return true
+    local code, headers, status = socket.skip(1, http.request{
+        url = url,
+        method = "GET",
+        headers = {
+            ["User-Agent"] = M.USER_AGENT,
+            ["Accept"] = "application/vnd.github+json",
+        },
+        sink = sink,
+        redirect = true,
+    })
+    socketutil:reset_timeout()
+    if limit_error then
+        remove_file(destination)
+        return nil, limit_error
     end
-    pcall(os.remove, dest)
-    return false
+    if headers == nil or code ~= 200 then
+        if destination then remove_file(destination) end
+        return nil, "HTTP " .. tostring(code or status or "error")
+    end
+    return destination and true or table.concat(chunks)
 end
 
-local function unzip_archive(zip_path, dest)
-    ensure_dir(dest)
-    local quoted = string.format("unzip -oq %q -d %q", zip_path, dest)
-    local ret = os.execute(quoted)
-    if ret == 0 or ret == true then
-        return true
+local function http_get_with_mirrors(url, destination, max_bytes)
+    local candidates = M.candidate_urls(url, false)
+    if #candidates == 0 then return nil, "update URL is not allowed" end
+    local last_error
+    for _, candidate in ipairs(candidates) do
+        local ok, err = http_get(candidate, destination, max_bytes)
+        if ok then return ok end
+        if err == "download exceeds size limit" then return nil, err end
+        last_error = err
+        require("lib.logger").warn("update source failed:", tostring(candidate), tostring(err))
     end
-    -- BusyBox unzip on some readers.
-    ret = os.execute(string.format("unzip -o %q -d %q", zip_path, dest))
-    return ret == 0 or ret == true
+    return nil, last_error or "all update sources failed"
 end
 
-local function restart_koreader()
-    local Device = require("device")
-    if Device.restartKOReader then
-        Device:restartKOReader()
-        return true
+local function read_file(path, max_bytes)
+    local file, err = io.open(path, "rb")
+    if not file then return nil, err end
+    if max_bytes then
+        local size = file:seek("end")
+        if not size or size > max_bytes then
+            file:close()
+            return nil, "file is larger than expected"
+        end
+        file:seek("set", 0)
     end
-    return false
+    local data = file:read("*a")
+    file:close()
+    return data
 end
 
-function M.install(zip_url, new_version)
+function M.fetch_release()
+    local body, err = http_get_with_mirrors(M.API_URL)
+    if not body then return nil, err end
+    local ok_json, json = pcall(require, "json")
+    if not ok_json then return nil, "JSON support unavailable" end
+    local ok, data = pcall(json.decode, body)
+    if not ok then return nil, "invalid GitHub response" end
+    return M.parse_release(data)
+end
+
+function M.cleanup_backup(plugin)
+    local dir = M.plugin_dir(plugin)
+    if not dir then return end
+    local backup = dir .. ".backup"
+    local ok_lfs, lfs = pcall(require, "libs/libkoreader-lfs")
+    if ok_lfs and lfs and not lfs.attributes(backup, "mode") then
+        return true
+    end
+    local removed, err = remove_tree(backup)
+    if not removed then
+        require("lib.logger").warn("could not remove previous update backup:", tostring(err))
+    end
+    return removed
+end
+
+function M.install_release(plugin, release)
+    local dir = M.plugin_dir(plugin)
+    if not dir then return nil, "plugin directory unavailable" end
+    local data_dir = plugin.settings and plugin.settings.data_dir
+        or require("datastorage"):getSettingsDir()
+    local archive = data_dir .. "/wereadannotationlite-update.zip"
+    local checksum = archive .. ".sha256"
+    local stage = data_dir .. "/update-stage"
+    remove_file(archive)
+    remove_file(checksum)
+    remove_tree(stage)
+    local made, make_err = make_path(stage)
+    if not made then return nil, "cannot create staging directory: " .. tostring(make_err) end
+
+    local ok, err = http_get_with_mirrors(release.archive_url, archive, M.MAX_PACKAGE_BYTES)
+    if not ok then remove_tree(stage); return nil, err end
+
+    local expected = release.digest
+    if release.checksum_url then
+        local checksum_ok, checksum_err = http_get_with_mirrors(release.checksum_url, checksum, 4096)
+        if not checksum_ok then
+            remove_file(archive); remove_tree(stage)
+            return nil, checksum_err
+        end
+        local checksum_body = read_file(checksum, 4096)
+        expected = checksum_body and checksum_body:match("^%s*([0-9a-fA-F]+)")
+        remove_file(checksum)
+    end
+    if expected then
+        local package = read_file(archive, M.MAX_PACKAGE_BYTES)
+        local Crypto = require("lib.crypto")
+        if not package or Crypto.sha256_hex(package) ~= expected:lower() then
+            remove_file(archive); remove_tree(stage)
+            return nil, "SHA-256 verification failed"
+        end
+    end
+
+    local unpacked, unpack_err = unpack_release(archive, stage)
+    remove_file(archive)
+    if not unpacked then remove_tree(stage); return nil, unpack_err end
+
+    local staged = staged_plugin_dir(stage)
+    local meta = staged and read_file(staged .. "/_meta.lua", 65536)
+    local main = staged and read_file(staged .. "/main.lua", 1024 * 1024)
+    local staged_version = meta and M.read_meta_version(meta)
+    if not main or staged_version ~= release.version then
+        remove_tree(stage)
+        return nil, "release package structure or version is invalid"
+    end
+
+    local backup = dir .. ".backup"
+    remove_tree(backup)
+    local moved_old, move_old_err = os.rename(dir, backup)
+    if not moved_old then remove_tree(stage); return nil, move_old_err or "could not back up plugin" end
+    local moved_new, move_new_err = os.rename(staged, dir)
+    if not moved_new then
+        os.rename(backup, dir)
+        remove_tree(stage)
+        return nil, move_new_err or "could not activate update"
+    end
+    remove_tree(stage)
+    return true
+end
+
+local function run_in_background(message, task, callback)
     local UIManager = require("ui/uimanager")
     local InfoMessage = require("ui/widget/infomessage")
-    local ConfirmBox = require("ui/widget/confirmbox")
-    local _ = require("lib.i18n")
-    local T = require("ffi/util").template
-    local lfs = require("libs/libkoreader-lfs")
-
-    UIManager:show(InfoMessage:new { text = _("Downloading update…"), timeout = 2 })
-    UIManager:scheduleIn(0.2, function()
-        local dir = M.cacheDir()
-        ensure_dir(dir)
-        local zip_path = dir .. "/update.zip"
-        local extract_dir = dir .. "/extract"
-        pcall(os.remove, zip_path)
-        os.execute(string.format("rm -rf %q", extract_dir))
-        ensure_dir(extract_dir)
-
-        if not download_file(zip_url, zip_path) then
-            UIManager:show(InfoMessage:new { text = _("Could not download the update.") })
-            return
-        end
-        if file_size(zip_path) < M.MIN_ZIP_SIZE then
-            pcall(os.remove, zip_path)
-            UIManager:show(InfoMessage:new { text = _("The downloaded update looks incomplete.") })
-            return
-        end
-        if not unzip_archive(zip_path, extract_dir) then
-            UIManager:show(InfoMessage:new { text = _("Could not unpack the update.") })
-            return
-        end
-        local payload = M.payloadDirectory(extract_dir)
-        if not payload then
-            UIManager:show(InfoMessage:new { text = _("The update archive has an unexpected layout.") })
-            return
-        end
-        local dest = M.pluginPath()
-        if lfs.attributes(dest, "mode") ~= "directory" then
-            UIManager:show(InfoMessage:new { text = _("Could not find the plugin directory.") })
-            return
-        end
-        if not copy_tree(payload, dest) then
-            UIManager:show(InfoMessage:new { text = _("Could not install the update files.") })
-            return
-        end
-        pcall(os.remove, zip_path)
-        os.execute(string.format("rm -rf %q", extract_dir))
-
-        UIManager:show(ConfirmBox:new {
-            text = T(_("Updated to %1. Restart KOReader to load it?"), tostring(new_version or "")),
-            ok_text = _("Restart"),
-            cancel_text = _("Later"),
-            ok_callback = function()
-                if not restart_koreader() then
-                    UIManager:show(InfoMessage:new {
-                        text = _("Please restart KOReader to load the update."),
-                    })
-                end
-            end,
-        })
-    end)
+    local ok_trapper, Trapper = pcall(require, "ui/trapper")
+    if ok_trapper and Trapper and Trapper.wrap and not coroutine.running() then
+        Trapper:wrap(function()
+            run_in_background(message, task, callback)
+        end)
+        return
+    end
+    local widget
+    if message then
+        widget = InfoMessage:new { text = message, timeout = 120 }
+        UIManager:show(widget)
+    end
+    local function safe_task()
+        local ok, result = xpcall(task, debug.traceback)
+        if ok then return result end
+        return { error = result }
+    end
+    local function finish(result)
+        if widget then UIManager:close(widget) end
+        callback(result)
+    end
+    if ok_trapper and Trapper and Trapper.dismissableRunInSubprocess then
+        local completed, result = Trapper:dismissableRunInSubprocess(safe_task, widget)
+        UIManager:scheduleIn(0.1, function()
+            if completed then
+                finish(result)
+            else
+                finish { cancelled = true, error = "cancelled" }
+            end
+        end)
+    else
+        UIManager:scheduleIn(0.1, function() finish(safe_task()) end)
+    end
 end
 
 function M.check(plugin)
     local UIManager = require("ui/uimanager")
     local InfoMessage = require("ui/widget/infomessage")
     local ConfirmBox = require("ui/widget/confirmbox")
-    local NetworkMgr = require("ui/network/manager")
     local _ = require("lib.i18n")
     local T = require("ffi/util").template
 
-    if plugin and plugin.isNetworkOnline and not plugin:isNetworkOnline() then
-        if plugin.showOffline then
-            plugin:showOffline(_("Update"))
-        else
-            UIManager:show(InfoMessage:new { text = _("Update: offline") })
-        end
-        return
-    end
-    if not NetworkMgr:isOnline() then
-        UIManager:show(InfoMessage:new { text = _("Update: offline") })
+    if plugin and plugin.whenOnline and plugin:whenOnline(function()
+        M.check(plugin)
+    end) then
         return
     end
 
-    UIManager:show(InfoMessage:new { text = _("Checking for updates…"), timeout = 2 })
-    UIManager:scheduleIn(0.2, function()
-        local body, err = http_get_body(M.API_LATEST)
-        if not body then
+    local installed = M.current_version((M.plugin_dir(plugin) or ".") .. "/_meta.lua")
+    run_in_background(_("Checking for updates…"), function()
+        local release, err = M.fetch_release()
+        return { release = release, error = err }
+    end, function(result)
+        if not result or not result.release then
+            if result and result.cancelled then return end
             UIManager:show(InfoMessage:new {
-                text = T(_("Could not check for updates: %1"), tostring(err or "error")),
+                text = T(_("Update check failed:\n%1"),
+                    result and result.error or _("Unknown error")),
             })
             return
         end
-        local release = decode_json(body)
-        local tag = M.releaseTag(release)
-        if not tag then
-            UIManager:show(InfoMessage:new { text = _("Could not read the latest release.") })
-            return
-        end
-        local installed = M.getInstalledVersion()
-        if not M.isNewer(tag, installed) then
+        local release = result.release
+        if M.compare_versions(release.version, installed) ~= 1 then
             UIManager:show(InfoMessage:new {
-                text = T(_("Already up to date.\n\nInstalled: %1\nLatest: %2"), installed, tag),
+                text = T(_("Already up to date (v%1)."), installed),
+                timeout = 3,
             })
             return
         end
-        local url = M.selectAsset(release)
-        if not url then
-            UIManager:show(InfoMessage:new { text = _("Latest release has no downloadable zip.") })
-            return
-        end
-        local notes = tostring(release.body or ""):gsub("#+%s*", "")
-        if #notes > 800 then
-            notes = notes:sub(1, 800) .. "…"
-        end
-        local msg = T(_("Version %1 is available (installed: %2). Install it?"), tag, installed)
-        if notes:find("%S") then
-            msg = msg .. "\n\n" .. notes
+        local msg = T(_("Version %1 is available (installed: %2). Install it?"),
+            release.version, installed)
+        if release.notes then
+            msg = msg .. "\n\n" .. release.notes
         end
         UIManager:show(ConfirmBox:new {
             text = msg,
             ok_text = _("Install"),
             cancel_text = _("Later"),
             ok_callback = function()
-                M.install(url, tag)
+                M.install(plugin, release)
+            end,
+        })
+    end)
+end
+
+function M.install(plugin, release)
+    local UIManager = require("ui/uimanager")
+    local InfoMessage = require("ui/widget/infomessage")
+    local ConfirmBox = require("ui/widget/confirmbox")
+    local _ = require("lib.i18n")
+    local T = require("ffi/util").template
+
+    run_in_background(_("Downloading update…"), function()
+        local ok, err = M.install_release(plugin, release)
+        return { success = ok == true, error = err }
+    end, function(result)
+        if not result or not result.success then
+            if result and result.cancelled then return end
+            UIManager:show(InfoMessage:new {
+                text = T(_("Update installation failed:\n%1"),
+                    result and result.error or _("Unknown error")),
+            })
+            return
+        end
+        UIManager:show(ConfirmBox:new {
+            text = T(_("Updated to %1. Restart KOReader to load it?"), release.version),
+            ok_text = _("Restart now"),
+            cancel_text = _("Later"),
+            ok_callback = function()
+                UIManager:restartKOReader()
             end,
         })
     end)

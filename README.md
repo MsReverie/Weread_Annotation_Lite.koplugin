@@ -105,7 +105,8 @@
 
 - 当前版本写在 `_meta.lua` 的 `version` 字段，需与 GitHub Release 的 tag 对应（如 `v0.1.0`）。
 - Release 需附带 zip 资源，顶层目录为插件文件夹（现有 `Weread_Annotation_Lite.koplugin.vX.Y.Z.zip` 即可）。
-- 安装覆盖插件目录内的代码文件；`koreader/settings` 与 `koreader/data` 里的登录和划线缓存不会被删。
+- 安装用 KOReader `ffi/archiver` 解压后整目录替换，旧目录留 `.backup`，启动成功后再删。登录和划线数据在 settings/data，不会被碰到。
+- GitHub 访问失败时会走 gh-proxy 等镜像。有 `sha256` digest 或 `.sha256` 资源时会校验。
 
 ---
 

@@ -13,45 +13,41 @@ local function assert_true(cond, msg)
     if not cond then error(msg or "assert_true", 2) end
 end
 
-local function assert_false(cond, msg)
-    if cond then error(msg or "assert_false", 2) end
-end
+assert_eq(OTA.compare_versions("0.1.0", "0.1.0"), 0)
+assert_eq(OTA.compare_versions("v0.2.0", "0.1.0"), 1)
+assert_eq(OTA.compare_versions("0.1.0", "v0.1.1"), -1)
+assert_eq(OTA.compare_versions("0.1.10", "0.1.9"), 1)
+assert_eq(OTA.compare_versions("nope", "0.1.0"), nil)
 
-assert_eq(OTA.parseVersion("v0.1.0")[1], 0)
-assert_eq(OTA.parseVersion("v0.1.0")[2], 1)
-assert_eq(OTA.parseVersion("v0.1.0")[3], 0)
-assert_eq(OTA.parseVersion("1.2")[1], 1)
-assert_eq(OTA.parseVersion("1.2")[2], 2)
+assert_eq(OTA.read_meta_version('version = "0.1.0"'), "0.1.0")
+assert_eq(OTA.current_version("_meta.lua"), "0.1.0")
 
-assert_false(OTA.isNewer("v0.1.0", "0.1.0"), "same version is not newer")
-assert_false(OTA.isNewer("0.1.0", "v0.1.0"), "v-prefix ignored")
-assert_true(OTA.isNewer("0.2.0", "0.1.0"), "minor bump")
-assert_true(OTA.isNewer("v1.0.0", "0.9.9"), "major bump")
-assert_false(OTA.isNewer("0.1.0", "0.1.1"), "older patch")
-assert_true(OTA.isNewer("0.1.10", "0.1.9"), "numeric compare, not string")
+local urls = OTA.candidate_urls(OTA.API_URL)
+assert_eq(urls[1], OTA.API_URL)
+assert_true(#urls > 1, "mirrors appended")
+assert_eq(#OTA.candidate_urls("https://evil.example/x"), 0)
 
-assert_eq(OTA.readMetaVersion('version = "0.1.0"'), "0.1.0")
-assert_eq(OTA.readMetaVersion("version = '1.2.3'"), "1.2.3")
-assert_eq(OTA.readMetaVersion("fullname = 'x'"), nil)
-
-local installed = OTA.getInstalledVersion("_meta.lua")
-assert_eq(installed, "0.1.0", "reads repo _meta.lua")
-
-local url, name = OTA.selectAsset({
+local release, err = OTA.parse_release({
+    tag_name = "v0.2.0",
+    body = "## Notes\n**hi**",
     assets = {
-        { name = "notes.txt", browser_download_url = "http://example/notes" },
-        { name = "Weread_Annotation_Lite.koplugin.v0.2.0.zip", browser_download_url = "http://example/p.zip" },
-    }
+        {
+            name = "Weread_Annotation_Lite.koplugin.v0.2.0.zip",
+            browser_download_url = OTA.RELEASE_PREFIX .. "v0.2.0/Weread_Annotation_Lite.koplugin.v0.2.0.zip",
+            size = 70000,
+            digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+    },
 })
-assert_eq(name, "Weread_Annotation_Lite.koplugin.v0.2.0.zip")
-assert_eq(url, "http://example/p.zip")
+assert_eq(err, nil)
+assert_eq(release.version, "0.2.0")
+assert_eq(release.digest, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+assert_eq(release.notes, "Notes\nhi")
 
-local zipball, fallback = OTA.selectAsset({ zipball_url = "http://example/zipball" })
-assert_eq(zipball, "http://example/zipball")
-assert_eq(fallback, "source.zip")
+local missing = select(2, OTA.parse_release({ tag_name = "v0.2.0", assets = {} }))
+assert_eq(missing, "release package is missing")
 
-assert_eq(OTA.releaseTag({ tag_name = "v0.2.0" }), "v0.2.0")
-assert_eq(OTA.releaseTag({ name = "1.0.0" }), "1.0.0")
-assert_eq(OTA.releaseTag({}), nil)
+local draft = select(1, OTA.parse_release({ tag_name = "v0.2.0", draft = true, assets = {} }))
+assert_eq(draft, nil)
 
 print("ota_spec ok")
