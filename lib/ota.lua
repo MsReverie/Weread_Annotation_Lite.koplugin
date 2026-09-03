@@ -13,6 +13,11 @@ M.API_URL = "https://api.github.com/repos/" .. M.REPO .. "/releases/latest"
 M.USER_AGENT = "KOReader-WereadAnnotationLite-Updater/1.0"
 M.PLUGIN_DIRNAME = "wereadannotationlite.koplugin"
 M.MAX_PACKAGE_BYTES = 10 * 1024 * 1024
+M.GITHUB_MIRRORS = {
+    "https://gh-proxy.com/",
+    "https://ghfast.top/",
+    "https://ghproxy.net/",
+}
 
 function M.is_version_newer(v1_str, v2_str)
     if not v1_str or not v2_str then return false end
@@ -164,6 +169,18 @@ local function join(ffiutil, ...)
     return result
 end
 
+function M.candidate_urls(url)
+    if type(url) ~= "string" or url == "" then return {} end
+    local github = url:match("^https://github%.com/")
+        or url:match("^https://api%.github%.com/")
+    local out = { url }
+    if not github then return out end
+    for _, prefix in ipairs(M.GITHUB_MIRRORS) do
+        out[#out + 1] = prefix .. url
+    end
+    return out
+end
+
 function M.cleanup_backup(plugin)
     local dir = M.plugin_dir(plugin)
     if not dir then return end
@@ -203,9 +220,6 @@ local function http_get(url, destination)
         redirect = true,
     })
     socketutil:reset_timeout()
-    if destination then
-        -- ltn12.sink.file closes on EOF; ignore double-close.
-    end
     if status_code ~= 200 then
         if destination then pcall(os.remove, destination) end
         return nil, "HTTP " .. tostring(status_code or status_line or "error")
@@ -226,8 +240,18 @@ local function http_get(url, destination)
     return table.concat(chunks)
 end
 
+local function http_get_with_mirrors(url, destination)
+    local last_error
+    for _, candidate in ipairs(M.candidate_urls(url)) do
+        local ok, err = http_get(candidate, destination)
+        if ok then return ok end
+        last_error = err
+    end
+    return nil, last_error or "all update sources failed"
+end
+
 function M.fetch_release()
-    local body, err = http_get(M.API_URL)
+    local body, err = http_get_with_mirrors(M.API_URL)
     if not body then return nil, err end
     local ok_json, json = pcall(require, "json")
     if not ok_json then return nil, "JSON support unavailable" end
@@ -253,7 +277,6 @@ local function find_extracted_plugin(stage)
     end
     return nil
 end
-
 
 function M.apply_release(plugin, zip_path, tmp)
     local FFIUtil = require("ffi/util")
@@ -385,7 +408,7 @@ function M.install(plugin, release)
         local download_msg = InfoMessage:new { text = _("Downloading…"), timeout = 120 }
         UIManager:show(download_msg)
         local completed, dl_ok, dl_err = Trapper:dismissableRunInSubprocess(function()
-            return http_get(release.archive_url, zip_path)
+            return http_get_with_mirrors(release.archive_url, zip_path)
         end, download_msg)
         UIManager:close(download_msg)
         if not completed then

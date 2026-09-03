@@ -81,9 +81,9 @@
 
 ## 数据存储
 
-- **数据库**：`koreader/data/wereadannotationlite/` 
+- **数据库**：`koreader/data/wereadannotationlite/`
   每本书一个 `.db`，文件名为书籍完整路径 SHA256 的前 16 位十六进制。
-- **设置**：`koreader/settings/wereadannotationlite.lua`  
+- **设置**：`koreader/settings/wereadannotationlite.lua`
   保存 `api_key`、`account` 和偏好。登录过程中的 Cookie 只用于扫码，**不会写入设置文件**。
 - **缓存**：热门划线按章节缓存（含 synckey）；想法按划线 range 缓存。
 
@@ -100,7 +100,6 @@
 | `debug_log` | `false` | 调试日志 |
 
 ---
-
 
 ## 注意
 

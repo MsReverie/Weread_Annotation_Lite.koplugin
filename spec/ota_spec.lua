@@ -35,6 +35,11 @@ assert_true(OTA.path_is_safe("Weread_Annotation_Lite.koplugin/main.lua"))
 
 assert_eq(OTA.current_version("_meta.lua"), "0.1.0")
 
+local urls = OTA.candidate_urls(OTA.API_URL)
+assert_eq(urls[1], OTA.API_URL)
+assert_true(#urls > 1)
+assert_eq(#OTA.candidate_urls("https://example.com/x"), 1)
+
 local release, err = OTA.parse_release({
     tag_name = "v0.2.0",
     assets = {{
