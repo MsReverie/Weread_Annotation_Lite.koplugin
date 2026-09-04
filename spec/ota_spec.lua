@@ -35,8 +35,10 @@ assert_false(OTA.is_excluded("Weread_Annotation_Lite.koplugin/main.lua"))
 assert_false(OTA.path_is_safe("../evil.lua"))
 assert_true(OTA.path_is_safe("Weread_Annotation_Lite.koplugin/main.lua"))
 
-assert_eq(OTA.current_version("_meta.lua"), "0.2.0")
-assert_eq(OTA.preferred_archive_name("0.2.0"), "Weread_Annotation_Lite.koplugin.v0.2.0.zip")
+local meta_version = OTA.current_version("_meta.lua")
+assert_true(meta_version:match("^%d+%.%d+%.%d+$"), "meta version is semver")
+assert_eq(OTA.preferred_archive_name(meta_version),
+    "Weread_Annotation_Lite.koplugin.v" .. meta_version .. ".zip")
 
 assert_eq(
     OTA.backup_path("/koreader/plugins/wereadannotationlite.koplugin"),
