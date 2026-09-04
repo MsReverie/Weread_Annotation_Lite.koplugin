@@ -92,9 +92,9 @@ assert_eq(
     "release package is missing"
 )
 
-assert_eq(select(1, OTA.validate_staged_plugin(".", "0.2.0")), true)
+assert_eq(select(1, OTA.validate_staged_plugin(".", meta_version)), true)
 assert_eq(select(2, OTA.validate_staged_plugin(".", "9.9.9")), "release package version mismatch")
-assert_eq(select(2, OTA.validate_staged_plugin("spec", "0.2.0")), "release package is missing main.lua")
-assert_eq(select(1, OTA.validate_staged_plugin(nil, "0.2.0")), nil)
+assert_eq(select(2, OTA.validate_staged_plugin("spec", meta_version)), "release package is missing main.lua")
+assert_eq(select(1, OTA.validate_staged_plugin(nil, meta_version)), nil)
 
 print("ota_spec ok")
