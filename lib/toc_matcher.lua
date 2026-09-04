@@ -10,7 +10,7 @@ monotonic matching. Ambiguous candidates are rejected instead of guessed.
 
 local Matcher = {}
 
-local FUZZY_THRESHOLD = 0.78
+local FUZZY_THRESHOLD = 0.70
 local FUZZY_MARGIN = 0.10
 local FILL_THRESHOLD = 0.50
 
@@ -166,7 +166,9 @@ function Matcher.similarity(want, have)
         score = score + math.min(0.15, suffix / base_len * 0.15)
     end
     if wp and hp and wp == hp then score = score + 0.20 end
-    if math.min(wtotal, htotal) < 4 then score = math.min(score, 0.70) end
+    if math.min(wtotal, htotal) < 4 then
+        score = math.min(score, FUZZY_THRESHOLD - 0.01)
+    end
     if score > 1 then score = 1 end
     return score
 end
@@ -192,12 +194,12 @@ local function candidate_score(want, item)
     return Matcher.similarity(normalized_want, have), "fuzzy"
 end
 
-function Matcher.find_candidate(weread_title, toc_items, last)
-    local want = Matcher.normalize_title(weread_title)
+local function find_best(title, items, last)
+    local want = Matcher.normalize_title(title)
     if want == "" then return nil end
     local best, second = nil, nil
-    for i = (last or 0) + 1, #(toc_items or {}) do
-        local score, kind = candidate_score(want, toc_items[i])
+    for i = (last or 0) + 1, #(items or {}) do
+        local score, kind = candidate_score(want, items[i])
         if score > 0 then
             local candidate = { index = i, score = score, kind = kind }
             if not best or score > best.score then
@@ -214,6 +216,14 @@ function Matcher.find_candidate(weread_title, toc_items, last)
         if second and (best.score - second.score) < FUZZY_MARGIN then return nil end
     end
     return best
+end
+
+function Matcher.find_candidate(weread_title, toc_items, last)
+    return find_best(weread_title, toc_items, last)
+end
+
+function Matcher.find_weread(toc_title, weread_chapters)
+    return find_best(toc_title, weread_chapters, 0)
 end
 
 local function fill_holes(map, weread_chapters, toc_items)

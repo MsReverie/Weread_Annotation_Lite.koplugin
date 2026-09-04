@@ -138,15 +138,6 @@ function Plugin:showList(title, items, empty_text)
     UIManager:show(menu)
 end
 
-function Plugin:onChapterMaybeChanged()
-    if self._thought_open then return end
-    if not self.settings:get("show_annotations", true) then return end
-    if not self.settings:get("prefetch_thoughts", true) then return end
-    if not (self.ui and self.ui.document) then return end
-    if self.prefetch.underlines_done then return end
-    self.prefetch:ensureAhead()
-end
-
 function Plugin:prefetchThoughts(silent)
     if not self.settings:get("show_annotations", true) then
         return
@@ -170,7 +161,7 @@ function Plugin:prefetchThoughts(silent)
         end
         return
     end
-    self.prefetch:onChapter(chapter)
+    self.prefetch:request({ chapter_uid = chapter })
     if not silent then
         self:showTransientInfo(_("Prefetch started."), 2)
     end
@@ -234,27 +225,16 @@ function Plugin:onPageUpdate(pageno)
     if self._local_annotation_overlay then
         self._local_annotation_overlay:dropFetchedEmpty(self.api.hasThoughtContent)
     end
-    if self._thought_open then return end
-    self:onChapterMaybeChanged()
+    self.prefetch:onChapterTurn()
 end
 
 function Plugin:onPosUpdate(_pos, pageno)
     self.toc_map:setPageno(pageno)
-    if self._thought_open then return end
-    self:onChapterMaybeChanged()
-end
-
-function Plugin:onNetworkConnected()
-    self:onChapterMaybeChanged()
-end
-
-function Plugin:onResume()
-    self:onChapterMaybeChanged()
+    self.prefetch:onChapterTurn()
 end
 
 function Plugin:onDocumentRerendered()
     OverlayController.onDocumentRerendered(self)
-    self:onChapterMaybeChanged()
 end
 
 function Plugin:onDocumentPartiallyRerendered()

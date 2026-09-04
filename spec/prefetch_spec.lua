@@ -126,36 +126,80 @@ guarded:resume()
 assert(guarded._paused == false, "resume clears paused state")
 assert(guarded._standby_held == true, "resume restores standby for active job")
 
--- ── ensureAhead scheduling/gating ────────────────────────────────────────────
+-- ── chapter-turn gating ──────────────────────────────────────────────────────
 local requested
+local current_uid = "chapter-9"
 local ahead_plugin = {
     _reader_session = 1,
     _thought_open = false,
-    toc_map = { currentWereadChapterUid = function() return "chapter-9" end },
+    settings = {
+        get = function(_, key, default)
+            if key == "show_annotations" or key == "prefetch_thoughts" then
+                return true
+            end
+            return default
+        end,
+    },
+    toc_map = { currentWereadChapterUid = function() return current_uid end },
 }
 local ahead = Prefetch:new(ahead_plugin)
 ahead.request = function(_, opts) requested = opts end
-ahead:ensureAhead()
-assert(#scheduled > 0, "ensureAhead schedules a delayed check")
+ahead:onChapterTurn()
+assert(#scheduled > 0, "chapter turn schedules a delayed check")
 local callback = table.remove(scheduled, 1)
 callback()
-assert(requested and requested.chapter_uid == "chapter-9", "ensureAhead requests current chapter")
+assert(requested and requested.chapter_uid == "chapter-9", "chapter turn requests current chapter")
 
 requested = nil
+local scheduled_n = #scheduled
+ahead:onChapterTurn()
+assert(#scheduled == scheduled_n, "same chapter does not reschedule")
+assert(requested == nil, "same chapter does not request again")
+
 ahead_plugin._thought_open = true
+current_uid = "chapter-9b"
+ahead:onChapterTurn()
+assert(#scheduled == scheduled_n, "open thought skips chapter turn")
+ahead_plugin._thought_open = false
+current_uid = "chapter-9"
+
 ahead:ensureAhead()
+assert(#scheduled > scheduled_n, "job followup still runs for the current chapter")
 callback = table.remove(scheduled, 1)
 callback()
-assert(requested == nil, "open thought popup defers ensureAhead")
-assert(ahead._followup == true, "open thought popup marks followup")
+assert(requested and requested.chapter_uid == "chapter-9", "followup requests current chapter")
 
 requested = nil
-ahead_plugin._thought_open = false
+current_uid = "chapter-10"
+ahead:onChapterTurn()
+callback = table.remove(scheduled, 1)
+callback()
+assert(requested and requested.chapter_uid == "chapter-10", "chapter change requests new chapter")
+
+requested = nil
+ahead.job = {}
+current_uid = "chapter-11"
+ahead:onChapterTurn()
+callback = table.remove(scheduled, 1)
+callback()
+assert(requested == nil, "in-flight job defers the new chapter")
+assert(ahead._followup == true, "chapter change during a job marks followup")
+ahead.job = nil
+ahead._followup = false
+
 ahead.underlines_done = true
-local scheduled_n = #scheduled
-ahead:ensureAhead()
-assert(#scheduled == scheduled_n, "done underlines skip ensureAhead")
+current_uid = "chapter-12"
+scheduled_n = #scheduled
+ahead:onChapterTurn()
+assert(#scheduled == scheduled_n, "done underlines skip chapter turns")
 ahead.underlines_done = false
+
+ahead:cancel()
+requested = nil
+ahead:onChapterTurn()
+callback = table.remove(scheduled, 1)
+callback()
+assert(requested and requested.chapter_uid == "chapter-12", "cancel allows chapter turns again")
 
 -- ── whole-book underline latch ───────────────────────────────────────────────
 local latch_plugin = {

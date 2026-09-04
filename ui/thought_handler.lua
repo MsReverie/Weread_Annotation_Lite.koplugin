@@ -92,7 +92,7 @@ function M.open(plugin, record)
         close_callback = function()
             plugin._thought_open = false
             plugin.prefetch:resume()
-            plugin:onChapterMaybeChanged()
+            plugin.prefetch:onChapterTurn()
         end,
     }
     return true
