@@ -253,4 +253,43 @@ local doc = {
 assert_eq(TocMap.uidAtXPointer(page_weread, page_matched, page_toc, doc, "xp6"),
     "6", "xpointer at chapter 6 heading is uid 6")
 
+assert_eq(TocMap.uidAtExactTocIndex(page_matched, 2), "6",
+    "exact TOC index maps to the WeRead chapter aligned there")
+assert_eq(TocMap.uidAtExactTocIndex(page_matched, 9), nil,
+    "unaligned TOC index has no exact WeRead chapter")
+assert_eq(TocMap.tocIndexAtXPointer(page_toc, doc, "xp6"), 2,
+    "xpointer at chapter 6 heading is local TOC index 2")
+
+-- TOC jump: WeRead order differs, so 第二章 is unmatched forward, but the
+-- landed local heading still reverse-matches the cached WeRead title.
+local jump_weread = {
+    { chapterUid = "1", title = "第一章" },
+    { chapterUid = "x", title = "插曲" },
+    { chapterUid = "2", title = "第二章" },
+}
+local jump_toc = {
+    { title = "第一章", pos = 0, page = 1, xpointer = "xp1" },
+    { title = "第二章", pos = 100, page = 2, xpointer = "xp2" },
+    { title = "插曲", pos = 200, page = 3, xpointer = "xp3" },
+}
+local jump_plugin = make_plugin(jump_weread, jump_toc, 100)
+local jump = TocMap.newInstance(jump_plugin)
+jump:setPageno(2)
+assert_eq(jump:currentWereadChapterUid(), "2",
+    "TOC jump to 第二章 uses cached WeRead uid even when forward match skipped it")
+
+-- Subsection under a matched chapter stays on that chapter.
+local sub_plugin = make_plugin({
+    { chapterUid = "3", title = "第三章" },
+    { chapterUid = "4", title = "第四章" },
+}, {
+    { title = "第三章", pos = 0, page = 1, xpointer = "xp3" },
+    { title = "3.2 细节", pos = 50, page = 2, xpointer = "xp32" },
+    { title = "第四章", pos = 100, page = 3, xpointer = "xp4" },
+}, 50)
+local sub = TocMap.newInstance(sub_plugin)
+sub:setPageno(2)
+assert_eq(sub:currentWereadChapterUid(), "3",
+    "unmatched subsection stays on the previous WeRead chapter")
+
 print("ok")

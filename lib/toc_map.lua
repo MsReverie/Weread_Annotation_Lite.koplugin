@@ -126,6 +126,48 @@ function TocMap.uidAtTocIndex(matched, toc_idx)
     return best_uid
 end
 
+function TocMap.uidAtExactTocIndex(matched, toc_idx)
+    toc_idx = tonumber(toc_idx)
+    if not toc_idx then return nil end
+    for uid, idx in pairs(matched or {}) do
+        if tonumber(idx) == toc_idx then return uid end
+    end
+    return nil
+end
+
+-- Last local TOC item at or before xp. compareXPointers(xp1, xp2): 1 if xp2 after xp1.
+function TocMap.tocIndexAtXPointer(toc_items, document, xp)
+    if not xp or not document or not document.compareXPointers then
+        return nil
+    end
+    local best_i = nil
+    for i, item in ipairs(toc_items or {}) do
+        if item.xpointer then
+            local cmp = document:compareXPointers(item.xpointer, xp)
+            if cmp ~= nil and cmp >= 0 then
+                best_i = i
+            end
+        end
+    end
+    return best_i
+end
+
+function TocMap.uidFromTocIndex(matched, toc_items, weread_chapters, toc_idx)
+    toc_idx = tonumber(toc_idx)
+    if not toc_idx then return nil end
+    local exact = TocMap.uidAtExactTocIndex(matched, toc_idx)
+    if exact then return exact end
+    local item = toc_items and toc_items[toc_idx]
+    if item and item.title then
+        local found = Matcher.find_weread(item.title, weread_chapters)
+        local chapter = found and weread_chapters[found.index]
+        if chapter and chapter.chapterUid then
+            return tostring(chapter.chapterUid)
+        end
+    end
+    return TocMap.uidAtTocIndex(matched, toc_idx)
+end
+
 -- CreDocument:compareXPointers(xp1, xp2): 1 if xp2 after xp1, 0 same, -1 before.
 function TocMap.uidAtXPointer(weread_chapters, matched, toc_items, document, xp)
     if not xp or not document or not document.compareXPointers then
@@ -226,20 +268,18 @@ function TocMapInstance:currentWereadChapterUid()
         pageno = document:getCurrentPage()
     end
     local scroll = self.plugin.ui.view and self.plugin.ui.view.view_mode == "scroll"
+    local toc_idx
     if not scroll and pageno then
-        local toc_idx = TocMap.indexAtPage(map.toc, pageno)
-        local uid = TocMap.uidAtTocIndex(map.matched, toc_idx)
-        if uid then return uid end
+        toc_idx = TocMap.indexAtPage(map.toc, pageno)
     end
-    if xp and document.compareXPointers then
-        local uid = TocMap.uidAtXPointer(map.chapters, map.matched, map.toc, document, xp)
-        if uid then return uid end
+    if not toc_idx and xp then
+        toc_idx = TocMap.tocIndexAtXPointer(map.toc, document, xp)
     end
-    if scroll and pageno then
-        local toc_idx = TocMap.indexAtPage(map.toc, pageno)
-        local uid = TocMap.uidAtTocIndex(map.matched, toc_idx)
-        if uid then return uid end
+    if not toc_idx and pageno then
+        toc_idx = TocMap.indexAtPage(map.toc, pageno)
     end
+    local uid = TocMap.uidFromTocIndex(map.matched, map.toc, map.chapters, toc_idx)
+    if uid then return uid end
     return TocMap.uidAtPos(map.bounds, document.getCurrentPos and document:getCurrentPos() or 0)
 end
 
