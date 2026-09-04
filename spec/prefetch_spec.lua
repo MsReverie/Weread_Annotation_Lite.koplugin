@@ -154,7 +154,31 @@ ahead_plugin._thought_open = false
 ahead.underlines_done = true
 local scheduled_n = #scheduled
 ahead:ensureAhead()
-assert(#scheduled == scheduled_n, "done underlines skip ensureAhead")
+assert(#scheduled == scheduled_n, "done underlines skip ensureAhead when cache cannot be checked")
+ahead.underlines_done = false
+
+ahead_plugin.ui = { document = { file = current_file } }
+ahead_plugin.database = {
+    cachedChapterSet = function()
+        return { ["chapter-9"] = true }
+    end,
+}
+ahead.underlines_done = true
+scheduled_n = #scheduled
+ahead:ensureAhead()
+assert(#scheduled == scheduled_n, "done underlines skip ensureAhead when current chapter is cached")
+
+requested = nil
+ahead_plugin.database.cachedChapterSet = function()
+    return { ["chapter-1"] = true }
+end
+ahead.underlines_done = true
+ahead:ensureAhead()
+assert(#scheduled > scheduled_n, "uncached current chapter still schedules ensureAhead")
+callback = table.remove(scheduled, 1)
+callback()
+assert(ahead.underlines_done == false, "uncached current chapter clears the underline latch")
+assert(requested and requested.chapter_uid == "chapter-9", "uncached current chapter requests prefetch")
 ahead.underlines_done = false
 
 -- ── whole-book underline latch ───────────────────────────────────────────────
@@ -192,7 +216,25 @@ function Prefetch.planWindow(self, ...)
 end
 latched:request({ chapter_uid = "1" })
 assert(plan_calls == 0, "done underlines skip later request")
+
+local cached_now = { ["1"] = true }
+latch_plugin.database.cachedChapterSet = function()
+    return cached_now
+end
+latched.underlines_done = true
+plan_calls = 0
 latched.startUnderlines = function() end
+latched:request({ chapter_uid = "2" })
+assert(latched.underlines_done == false, "uncached chapter clears the underline latch")
+assert(plan_calls == 1, "uncached chapter still plans a window")
+
+cached_now = { ["1"] = true, ["2"] = true }
+latched.underlines_done = true
+plan_calls = 0
+latched:request({ chapter_uid = "1" })
+assert(plan_calls == 0, "cached current chapter keeps the underline latch")
+assert(latched.underlines_done == true, "cached current chapter stays done")
+
 latched:request({ force = true, chapter_uid = "1" })
 Prefetch.planWindow = orig_plan
 assert(latched.underlines_done == false, "force clears the underline latch")

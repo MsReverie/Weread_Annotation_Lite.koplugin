@@ -141,12 +141,18 @@ function Plugin:showList(title, items, empty_text)
 end
 
 function Plugin:onChapterMaybeChanged()
-    if self._wake_hold then return end
     if self._thought_open then return end
     if not self.settings:get("show_annotations", true) then return end
     if not self.settings:get("prefetch_thoughts", true) then return end
     if not (self.ui and self.ui.document) then return end
-    if self.prefetch.underlines_done then return end
+    -- A post-resume hold must not outlive the wake: onNetworkConnected may
+    -- never fire, so release it here once the network is actually back rather
+    -- than blocking every later chapter change.
+    if self._wake_hold then
+        if not self.api:isOnline() then return end
+        self._wake_hold = false
+        self.prefetch:resume()
+    end
     self.prefetch:ensureAhead()
 end
 

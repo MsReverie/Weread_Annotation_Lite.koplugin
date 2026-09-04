@@ -297,10 +297,33 @@ function Prefetch:afterChapterTurn(_chapter_uid)
     self:ensureAhead()
 end
 
+-- True only when the chapter is known and has no cached underline payload.
+-- An unknown chapter or an unreadable cache keeps the whole-book latch shut,
+-- so this never reopens prefetch on a guess.
+function Prefetch:_chapterNeedsFetch(chapter_uid)
+    local plugin = self.plugin
+    if not chapter_uid then
+        chapter_uid = plugin.toc_map and plugin.toc_map:currentWereadChapterUid()
+    end
+    if not chapter_uid then return false end
+    local file = plugin.ui and plugin.ui.document and plugin.ui.document.file
+    if not file then return false end
+    local database = plugin.database
+    if not database or not database.cachedChapterSet then return false end
+    local ok, cached = pcall(database.cachedChapterSet, database, file)
+    if not ok or type(cached) ~= "table" then return false end
+    return not cached[tostring(chapter_uid)]
+end
+
 -- Debounced chapter-boundary check: fetch a 5-chapter batch when any of
 -- the next 1–3 chapters is uncached (and request() is not in cooldown).
+-- The whole-book latch only holds while the current chapter is itself cached,
+-- so a jump into an uncached chapter still prefetches.
 function Prefetch:ensureAhead()
-    if self.underlines_done then return end
+    if self.underlines_done then
+        if not self:_chapterNeedsFetch() then return end
+        self.underlines_done = false
+    end
     local plugin = self.plugin
     local token = {}
     self._turn_token = token
@@ -338,7 +361,8 @@ function Prefetch:request(opts)
     if opts.force then
         self.underlines_done = false
     elseif self.underlines_done then
-        return
+        if not self:_chapterNeedsFetch(opts.chapter_uid) then return end
+        self.underlines_done = false
     end
     local file = plugin.ui and plugin.ui.document and plugin.ui.document.file
     local binding = file and plugin.database:getBinding(file)
