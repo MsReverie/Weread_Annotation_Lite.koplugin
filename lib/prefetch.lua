@@ -113,6 +113,7 @@ function Prefetch:cancel()
     self._paused = false
     self._turn_token = nil
     self._unknown_chapter_notified = false
+    self._seen_uid = nil
     self.underlines_done = false
     self:_stopBg()
     self:_releaseStandby()
@@ -289,16 +290,27 @@ function Prefetch:_prepareLocateRows(chapter_uid, rows)
     return kept
 end
 
-function Prefetch:onChapter(chapter_uid)
-    self:request({ chapter_uid = chapter_uid })
-end
-
-function Prefetch:afterChapterTurn(_chapter_uid)
+-- Same chapter is a no-op. Job followup calls ensureAhead() directly.
+function Prefetch:onChapterTurn()
+    local plugin = self.plugin
+    if plugin._thought_open or self.underlines_done then return end
+    if not plugin.settings:get("show_annotations", true) then return end
+    if not plugin.settings:get("prefetch_thoughts", true) then return end
+    local uid = plugin.toc_map:currentWereadChapterUid()
+    if not uid then
+        local file = plugin.ui.document and plugin.ui.document.file
+        if file and plugin.database:getBinding(file) and not self._unknown_chapter_notified then
+            self._unknown_chapter_notified = true
+            notify(self, _("Could not detect the current chapter."))
+        end
+        return
+    end
+    uid = tostring(uid)
+    if uid == self._seen_uid then return end
+    self._seen_uid = uid
     self:ensureAhead()
 end
 
--- Debounced chapter-boundary check: fetch a 5-chapter batch when any of
--- the next 1–3 chapters is uncached (and request() is not in cooldown).
 function Prefetch:ensureAhead()
     if self.underlines_done then return end
     local plugin = self.plugin
@@ -314,16 +326,8 @@ function Prefetch:ensureAhead()
             self._followup = true
             return
         end
-        local uid = plugin.toc_map and plugin.toc_map:currentWereadChapterUid()
-        if not uid then
-            logger.debug("prefetch ensureAhead skip: unknown-chapter")
-            local file = plugin.ui.document and plugin.ui.document.file
-            if file and plugin.database:getBinding(file) and not self._unknown_chapter_notified then
-                self._unknown_chapter_notified = true
-                notify(self, _("Could not detect the current chapter."))
-            end
-            return
-        end
+        local uid = plugin.toc_map:currentWereadChapterUid()
+        if not uid then return end
         self:request({ chapter_uid = uid })
     end)
 end
@@ -384,7 +388,11 @@ function Prefetch:request(opts)
         return
     end
 
-    local chapter_uid = opts.chapter_uid or (plugin.toc_map and plugin.toc_map:currentWereadChapterUid())
+    local chapter_uid = opts.chapter_uid or plugin.toc_map:currentWereadChapterUid()
+    if chapter_uid then
+        self._seen_uid = tostring(chapter_uid)
+        self._unknown_chapter_notified = false
+    end
     if not chapter_uid and not opts.force then return end
 
     local window, reason = self:planWindow(file, chapter_uid, {
@@ -412,7 +420,7 @@ function Prefetch:request(opts)
             later(cooldown - elapsed, function()
                 self._cooldown_pending = false
                 local next_opts = opts.force and opts or {
-                    chapter_uid = plugin.toc_map and plugin.toc_map:currentWereadChapterUid(),
+                    chapter_uid = plugin.toc_map:currentWereadChapterUid(),
                 }
                 self:request(next_opts)
             end)
@@ -422,9 +430,6 @@ function Prefetch:request(opts)
 
     if opts.notify or (not opts.force and not opts.skip_fetch_toast) then
         notify(self, _("Fetching underlines…"), 2)
-    end
-    if chapter_uid then
-        self._unknown_chapter_notified = false
     end
     self:_holdStandby()
     self:startUnderlines(file, binding, window, gen, opts.force)
