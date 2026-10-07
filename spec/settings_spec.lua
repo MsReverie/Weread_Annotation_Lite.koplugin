@@ -2,7 +2,6 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 
 local DATA = "/koreader"
 local modes = {}
-local flushed = {}
 
 package.loaded["libs/libkoreader-lfs"] = {
     attributes = function(path, key)
@@ -20,7 +19,7 @@ package.loaded.datastorage = {
     getSettingsDir = function() return DATA .. "/settings" end,
 }
 package.loaded.luasettings = {
-    open = function(_, path)
+    open = function()
         local data = {}
         return {
             readSetting = function(_, key, default)
@@ -29,8 +28,7 @@ package.loaded.luasettings = {
             end,
             saveSetting = function(_, key, value) data[key] = value end,
             delSetting = function(_, key) data[key] = nil end,
-            flush = function() flushed[path] = true end,
-            close = function() flushed[path] = true end,
+            flush = function() end,
         }
     end,
 }
@@ -53,12 +51,6 @@ end
 modes[DATA .. "/wereadannotationlite"] = "file"
 local settings = Settings:new()
 assert_eq(modes[settings:get("data_dir")], "directory", "data_dir becomes a directory")
-
--- Legacy migration only reads; it never writes the relative legacy file.
-modes["wereadannotationlite"] = "file"
-Settings:new()
-assert_eq(flushed["wereadannotationlite"], nil, "legacy file not flushed")
-assert_eq(flushed[DATA .. "/settings/wereadannotationlite.lua"], true, "settings flushed")
 
 os.remove = real_remove
 print("settings_spec: ok")

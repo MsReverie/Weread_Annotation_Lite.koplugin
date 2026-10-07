@@ -5,7 +5,7 @@ local lfs = require("libs/libkoreader-lfs")
 local Settings = {}
 Settings.__index = Settings
 
--- PR #2 left a stray file at the data dir path; replace it with a directory.
+-- Older versions flushed a file onto this path (KOReader CWD on Kindle/Kobo).
 local function ensure_dir(path)
     local mode = lfs.attributes(path, "mode")
     if mode == "directory" then return true end
@@ -30,17 +30,6 @@ function Settings:new()
     obj.file = LuaSettings:open(
         DataStorage:getSettingsDir() .. "/wereadannotationlite.lua"
     )
-    if obj.file:readSetting("api_key", "") == "" then
-        -- Read-only: flushing this relative path would write a file into CWD.
-        if lfs.attributes("wereadannotationlite", "mode") == "file" then
-            local legacy = LuaSettings:open("wereadannotationlite")
-            for _, key in ipairs({ "api_key", "account" }) do
-                local value = legacy:readSetting(key)
-                if value ~= nil then obj.file:saveSetting(key, value) end
-            end
-        end
-        obj.file:flush()
-    end
     if drop_web_session(obj.file) then
         obj.file:flush()
     end
