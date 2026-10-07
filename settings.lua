@@ -5,6 +5,14 @@ local lfs = require("libs/libkoreader-lfs")
 local Settings = {}
 Settings.__index = Settings
 
+-- PR #2 left a stray file at the data dir path; replace it with a directory.
+local function ensure_dir(path)
+    local mode = lfs.attributes(path, "mode")
+    if mode == "directory" then return true end
+    if mode then os.remove(path) end
+    return lfs.mkdir(path)
+end
+
 local function drop_web_session(file)
     local stale = false
     for _, key in ipairs({ "cookies", "wr_ticket", "wr_wrpa" }) do
@@ -23,18 +31,20 @@ function Settings:new()
         DataStorage:getSettingsDir() .. "/wereadannotationlite.lua"
     )
     if obj.file:readSetting("api_key", "") == "" then
-        local legacy = LuaSettings:open("wereadannotationlite")
-        for _, key in ipairs({ "api_key", "account" }) do
-            local value = legacy:readSetting(key)
-            if value ~= nil then obj.file:saveSetting(key, value) end
+        -- Read-only: flushing this relative path would write a file into CWD.
+        if lfs.attributes("wereadannotationlite", "mode") == "file" then
+            local legacy = LuaSettings:open("wereadannotationlite")
+            for _, key in ipairs({ "api_key", "account" }) do
+                local value = legacy:readSetting(key)
+                if value ~= nil then obj.file:saveSetting(key, value) end
+            end
         end
-        if legacy.close then legacy:close() end
         obj.file:flush()
     end
     if drop_web_session(obj.file) then
         obj.file:flush()
     end
-    if not lfs.attributes(obj.data_dir, "mode") then lfs.mkdir(obj.data_dir) end
+    ensure_dir(obj.data_dir)
     obj.values = {
         api_key = "",
         show_annotations = true,
