@@ -206,9 +206,9 @@ function Database:open(file, create)
     local dir = (self:path(file):match("^(.*)/") or ".")
     local path = self:path(file)
     if not create and not lfs.attributes(path, "mode") then return nil end
-    if not lfs.attributes(dir, "mode") then
+    if lfs.attributes(dir, "mode") ~= "directory" then
         local created, mkdir_err = lfs.mkdir(dir)
-        if not created and not lfs.attributes(dir, "mode") then
+        if not created and lfs.attributes(dir, "mode") ~= "directory" then
             return nil, tostring(mkdir_err or "database directory creation failed")
         end
     end
