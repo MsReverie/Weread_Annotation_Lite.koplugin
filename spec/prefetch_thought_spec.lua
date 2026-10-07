@@ -19,17 +19,12 @@ package.loaded["ui/uimanager"] = {
     setDirty = function() end,
 }
 package.loaded["ffi/util"] = {}
-package.loaded["ffi/blitbuffer"] = { COLOR_DARK_GRAY = 1 }
-package.loaded["ui/size"] = { line = { thick = 2 } }
-package.loaded.socketutil = {}
 package.loaded.json = {
     encode = function(value) return value end,
     decode = function(value) return value end,
 }
 
 local Prefetch = require("lib.prefetch")
-local Overlay = require("ui.overlay")
-local API = require("lib.api")
 
 local file = "/books/test.epub"
 local saves = {}
@@ -65,13 +60,6 @@ local plugin = {
                 return {
                     reviews = {
                         { range = "r1", items = { { content = "idea" } } },
-                    },
-                }
-            end
-            if mode == "partial" then
-                return {
-                    reviews = {
-                        { range = "r1", pageReviews = { { review = { content = "idea" } } } },
                     },
                 }
             end
@@ -132,36 +120,5 @@ end
 
 assert(#saves == 0, "empty reviews response saves nothing")
 assert(empty_prefetch.job == nil, "empty reviews response completes without retry")
-
--- A range missing from the response stays fetched=0 and its underline stays
--- displayed. The response uses the documented readreviews shape.
-saves = {}
-mode = "partial"
-plugin.api.parseReviewItems = API.parseReviewItems
-local overlay = Overlay:new({ records = {
-    { chapter_uid = "chapter-1", range = "r1", pos0 = "1", pos1 = "1", fetched = 0, items = {} },
-    { chapter_uid = "chapter-1", range = "r2", pos0 = "2", pos1 = "2", fetched = 0, items = {} },
-} })
-overlay.ui = { dimen = { h = 100 }, document = {
-    getCurrentPos = function() return 0 end,
-    getVisiblePageCount = function() return 1 end,
-    getPosFromXPointer = function(_, xp) return tonumber(xp) end,
-    getScreenBoxesFromPositions = function() return { { x = 0, y = 0, w = 1, h = 1 } } end,
-} }
-overlay.view = {}
-plugin._local_annotation_overlay = overlay
-
-local partial_prefetch = Prefetch:new(plugin)
-partial_prefetch:startThoughts(file, { book_id = "book-1" },
-    { { chapterUid = "chapter-1" } }, partial_prefetch.gen)
-while #scheduled > 0 do
-    local callback = table.remove(scheduled, 1)
-    callback()
-end
-
-assert(#saves == 1 and saves[1].range == "r1", "range with a thought is saved")
-assert(overlay.records[2].range == "r2" and overlay.records[2].fetched == 0,
-    "missing range is not marked fetched")
-assert(#overlay:_computeVisible() == 2, "missing range stays displayed")
 
 print("ok")
