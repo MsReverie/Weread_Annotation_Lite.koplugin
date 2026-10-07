@@ -688,28 +688,17 @@ function Prefetch:startThoughts(file, binding, chapters, gen)
             if not self:alive(gen) or self.job ~= job then return end
             job.waiting = false
             if ok and type(result) == "table" and type(result.reviews) == "table" then
-                local found_ranges = {}
                 for _, review in ipairs(result.reviews) do
                     local range = review.range
                     if range then
                         local parsed = self.plugin.api:parseReviewItems(review)
                         if self.plugin.api.hasThoughtContent(parsed) then
-                            found_ranges[range] = true
                             local encoded = self.plugin.api:json_encode(parsed)
                             self.plugin.database:saveThoughts(file, job.chapter_uid, range, encoded, true)
                             if self.plugin._local_annotation_overlay then
                                 self.plugin._local_annotation_overlay:updateThought(
                                     job.chapter_uid, range, parsed)
                             end
-                        end
-                    end
-                end
-                for _, range in ipairs(batch) do
-                    if not found_ranges[range] then
-                        self.plugin.database:saveThoughts(file, job.chapter_uid, range, "[]", true)
-                        if self.plugin._local_annotation_overlay then
-                            self.plugin._local_annotation_overlay:updateThought(
-                                job.chapter_uid, range, {})
                         end
                     end
                 end

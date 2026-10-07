@@ -99,15 +99,10 @@ while #scheduled > 0 do
     callback()
 end
 
-assert(#saves == 2, "successful review response records both ranges")
+assert(#saves == 1, "only the range with a thought is saved")
 assert(saves[1].range == "r1" and saves[1].fetched == true,
     "range with a thought is marked fetched")
-assert(saves[2].range == "r2" and saves[2].fetched == true,
-    "range without a thought is also marked fetched")
-assert(#updates == 2, "both ranges update the overlay")
-assert(updates[1].range == "r1", "thought result updates the overlay")
-assert(updates[2].range == "r2" and #(updates[2].items or {}) == 0,
-    "empty thought marks the overlay fetched so shouldDisplay can hide it")
+assert(#updates == 1 and updates[1].range == "r1", "thought result updates the overlay")
 assert(prefetch.job == nil, "successful thought prefetch finishes")
 
 -- An empty reviews response is a successful negative result, so it must not retry.
@@ -123,9 +118,7 @@ while #scheduled > 0 do
     callback()
 end
 
-assert(#saves == 2, "empty reviews response records both ranges")
-assert(saves[1].fetched == true and saves[2].fetched == true,
-    "empty reviews response is cached as fetched")
+assert(#saves == 0, "empty reviews response saves nothing")
 assert(empty_prefetch.job == nil, "empty reviews response completes without retry")
 
 print("ok")
