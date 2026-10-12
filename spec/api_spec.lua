@@ -9,7 +9,7 @@ package.loaded.socketutil = {
 package.loaded["socket.http"] = { request = function() end }
 package.loaded["lib.protocol"] = {
     USER_AGENT = "",
-    SKILL_VERSION = "1.0.4",
+    SKILL_VERSION = "1.0.5",
     SEARCH_SCOPE_EBOOK = 10,
 }
 package.loaded["lib.logger"] = {
